@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:kurier_web/app/l10n_tables.dart';
@@ -12,6 +13,7 @@ import 'package:kurier_web/protocol/models.dart';
 import 'package:kurier_web/protocol/http_api.dart';
 import 'package:kurier_web/protocol/permissions.dart';
 import 'package:kurier_web/protocol/search_query.dart';
+import 'package:kurier_web/protocol/sounds.dart';
 import 'package:kurier_web/protocol/trpc_client.dart';
 import 'package:kurier_web/protocol/voice_protocol.dart';
 import 'package:kurier_web/protocol/voice_stats.dart';
@@ -101,6 +103,77 @@ void main() {
       expect(hasHereMention(here), isTrue);
       expect(hasMention(here, 1, isOnline: false), isFalse);
       expect(hasMention(here, 1, isOnline: true), isTrue);
+    });
+  });
+
+  group('incoming message sounds', () {
+    test('skips own messages', () {
+      expect(
+        shouldPlayIncomingMessageSound(
+          isOwn: true,
+          mentioned: true,
+          channelOverride: null,
+          soundMention: true,
+          soundMessage: true,
+        ),
+        isFalse,
+      );
+    });
+
+    test('skips muted channels', () {
+      expect(
+        shouldPlayIncomingMessageSound(
+          isOwn: false,
+          mentioned: true,
+          channelOverride: 'nothing',
+          soundMention: true,
+          soundMessage: true,
+        ),
+        isFalse,
+      );
+    });
+
+    test('respects mention vs message prefs', () {
+      expect(
+        shouldPlayIncomingMessageSound(
+          isOwn: false,
+          mentioned: true,
+          channelOverride: null,
+          soundMention: true,
+          soundMessage: false,
+        ),
+        isTrue,
+      );
+      expect(
+        shouldPlayIncomingMessageSound(
+          isOwn: false,
+          mentioned: true,
+          channelOverride: null,
+          soundMention: false,
+          soundMessage: true,
+        ),
+        isFalse,
+      );
+      expect(
+        shouldPlayIncomingMessageSound(
+          isOwn: false,
+          mentioned: false,
+          channelOverride: null,
+          soundMention: true,
+          soundMessage: false,
+        ),
+        isFalse,
+      );
+      expect(
+        shouldPlayIncomingMessageSound(
+          isOwn: false,
+          mentioned: false,
+          channelOverride: null,
+          soundMention: false,
+          soundMessage: true,
+        ),
+        isTrue,
+      );
     });
   });
 
@@ -236,6 +309,202 @@ void main() {
       );
       expect(payload['kind'], 'audio');
       expect(payload.containsKey('qualityLayers'), isFalse);
+    });
+
+    test('unwraps bare and nested ICE parameters', () {
+      expect(
+        iceParametersOf({
+          'usernameFragment': 'ufrag',
+          'password': 'pwd',
+          'iceLite': true,
+        })?['usernameFragment'],
+        'ufrag',
+      );
+      expect(
+        iceParametersOf({
+          'iceParameters': {'usernameFragment': 'nested', 'password': 'secret'},
+        })?['password'],
+        'secret',
+      );
+      expect(iceParametersOf({'usernameFragment': 'only'}), isNull);
+      expect(iceParametersOf({}), isNull);
+    });
+
+    test('detects unmuted remotes for receive-path health', () {
+      final map = {
+        20: {
+          1: VoiceUserState(),
+          2: VoiceUserState(micMuted: true),
+          3: VoiceUserState(),
+        },
+      };
+      expect(
+        hasUnmutedRemoteVoiceUser(channelId: 20, ownUserId: 1, voiceMap: map),
+        isTrue,
+      );
+      map[20]![3] = VoiceUserState(serverMuted: true);
+      expect(
+        hasUnmutedRemoteVoiceUser(channelId: 20, ownUserId: 1, voiceMap: map),
+        isFalse,
+      );
+    });
+
+    test('playback health requires live graphs for expected audio keys', () {
+      const health = VoicePlaybackHealth(
+        ctxRunning: true,
+        keepAlive: true,
+        recvState: 'connected',
+        liveAudioKeys: ['2:audio'],
+        graphKeys: ['2:audio'],
+      );
+      expect(
+        isVoicePlaybackHealthy(health: health, expectedAudioKeys: ['2:audio']),
+        isTrue,
+      );
+      expect(
+        isVoicePlaybackHealthy(health: health, expectedAudioKeys: ['3:audio']),
+        isFalse,
+      );
+      expect(
+        isVoicePlaybackHealthy(
+          health: VoicePlaybackHealth(
+            ctxRunning: false,
+            keepAlive: true,
+            recvState: 'connected',
+            liveAudioKeys: ['2:audio'],
+            graphKeys: ['2:audio'],
+          ),
+          expectedAudioKeys: ['2:audio'],
+        ),
+        isFalse,
+      );
+      expect(
+        isVoicePlaybackHealthy(
+          health: VoicePlaybackHealth(
+            ctxRunning: true,
+            keepAlive: true,
+            recvState: 'disconnected',
+            liveAudioKeys: ['2:audio'],
+            graphKeys: ['2:audio'],
+          ),
+          expectedAudioKeys: ['2:audio'],
+        ),
+        isFalse,
+      );
+    });
+
+    test('does not treat a quiet unmuted room as dead', () {
+      expect(
+        shouldReceiveVoiceAudio(
+          voiceState: 'connected',
+          soundMuted: false,
+          hasUnmutedRemote: true,
+        ),
+        isTrue,
+      );
+      expect(
+        shouldReceiveVoiceAudio(
+          voiceState: 'connected',
+          soundMuted: true,
+          hasUnmutedRemote: true,
+        ),
+        isFalse,
+      );
+      expect(
+        shouldSilentRejoinVoice(
+          shouldReceive: true,
+          playbackHealthy: true,
+          pastGrace: true,
+          heldDead: true,
+          rejoinsInWindow: 0,
+        ),
+        isFalse,
+      );
+    });
+
+    test('silent rejoin requires a dead path after grace and hold', () {
+      expect(
+        shouldSilentRejoinVoice(
+          shouldReceive: true,
+          playbackHealthy: false,
+          pastGrace: true,
+          heldDead: true,
+          rejoinsInWindow: 0,
+        ),
+        isTrue,
+      );
+      expect(
+        shouldSilentRejoinVoice(
+          shouldReceive: true,
+          playbackHealthy: false,
+          pastGrace: false,
+          heldDead: true,
+          rejoinsInWindow: 0,
+        ),
+        isFalse,
+      );
+      expect(
+        shouldSilentRejoinVoice(
+          shouldReceive: false,
+          playbackHealthy: false,
+          pastGrace: true,
+          heldDead: true,
+          rejoinsInWindow: 0,
+        ),
+        isFalse,
+      );
+    });
+
+    test('caps silent rejoins inside the cooldown window', () {
+      final now = DateTime(2026, 8, 27, 20);
+      final times = [
+        now.subtract(const Duration(seconds: 10)),
+        now.subtract(const Duration(seconds: 5)),
+      ];
+      expect(rejoinsInVoiceWindow(times, now), 2);
+      expect(
+        shouldSilentRejoinVoice(
+          shouldReceive: true,
+          playbackHealthy: false,
+          pastGrace: true,
+          heldDead: true,
+          rejoinsInWindow: rejoinsInVoiceWindow(times, now),
+        ),
+        isFalse,
+      );
+      times.add(now.subtract(const Duration(seconds: 70)));
+      expect(rejoinsInVoiceWindow(List.of(times), now), 2);
+      final pruned = [
+        now.subtract(const Duration(seconds: 70)),
+        now.subtract(const Duration(seconds: 5)),
+      ];
+      expect(rejoinsInVoiceWindow(pruned, now), 1);
+      expect(
+        shouldSilentRejoinVoice(
+          shouldReceive: true,
+          playbackHealthy: false,
+          pastGrace: true,
+          heldDead: true,
+          rejoinsInWindow: 1,
+        ),
+        isTrue,
+      );
+    });
+
+    test('expected remote audio keys use stored consumer keys', () {
+      final keys = expectedRemoteAudioKeys(
+        channelId: 20,
+        ownUserId: 1,
+        voiceMap: {
+          20: {
+            1: VoiceUserState(),
+            2: VoiceUserState(),
+            3: VoiceUserState(micMuted: true),
+          },
+        },
+        consumerKeys: {'2:audio': '2:audio'},
+      );
+      expect(keys, ['2:audio']);
     });
 
     test('reads simulcast from public server settings', () {
@@ -514,6 +783,58 @@ void main() {
         (s) => (s.text ?? '').contains('vanilla'),
       );
       expect(link.style?.decoration, TextDecoration.underline);
+    });
+
+    test('resolves mention labels from live display names', () {
+      const html =
+          '<p>hi <span data-type="mention" data-user-id="7">@ada</span> '
+          '<span data-type="mention" data-mention-kind="everyone">@everyone</span></p>';
+      final spans = messageHtmlSpans(
+        html,
+        color: const Color(0xFFFFFFFF),
+        linkColor: const Color(0xFF5865F2),
+        mentionUsers: {7: KurierUser(id: 7, name: 'ada', nickname: 'Gordon')},
+      );
+      final text = spans
+          .map((s) => s is TextSpan ? s.toPlainText() : '')
+          .join();
+      expect(text, contains('@Gordon'));
+      expect(text, isNot(contains('@ada')));
+      expect(text, contains('@everyone'));
+    });
+
+    test('user mentions get a tap recognizer when onMention is set', () {
+      var tappedId = 0;
+      Offset? tappedPos;
+      const html =
+          '<p><span data-type="mention" data-mention-kind="user" data-user-id="7">@ada</span> '
+          '<span data-type="mention" data-mention-kind="everyone">@everyone</span> '
+          '<span data-type="mention" data-mention-kind="here">@here</span></p>';
+      final spans = messageHtmlSpans(
+        html,
+        color: const Color(0xFFFFFFFF),
+        linkColor: const Color(0xFF5865F2),
+        onMention: (id, pos) {
+          tappedId = id;
+          tappedPos = pos;
+        },
+      );
+      final mention = spans.whereType<TextSpan>().firstWhere(
+        (s) => (s.text ?? '').contains('@ada'),
+      );
+      expect(mention.recognizer, isA<TapGestureRecognizer>());
+      (mention.recognizer! as TapGestureRecognizer).onTap!();
+      expect(tappedId, 7);
+      expect(tappedPos, Offset.zero);
+
+      final everyone = spans.whereType<TextSpan>().firstWhere(
+        (s) => (s.text ?? '').contains('@everyone'),
+      );
+      expect(everyone.recognizer, isNull);
+      final here = spans.whereType<TextSpan>().firstWhere(
+        (s) => (s.text ?? '').contains('@here'),
+      );
+      expect(here.recognizer, isNull);
     });
 
     test('turns unicode emoji and custom img into widget spans', () {
@@ -870,10 +1191,9 @@ void main() {
       );
       expect(
         messageHtmlHasVisibleText(
-          hideEmbeddedMediaUrlsInHtml(
-            '<p>https://host/public/abc.mp4</p>',
-            [video],
-          ),
+          hideEmbeddedMediaUrlsInHtml('<p>https://host/public/abc.mp4</p>', [
+            video,
+          ]),
         ),
         isFalse,
       );
@@ -967,10 +1287,7 @@ void main() {
       });
       expect(file.accessToken, 'tok');
       expect(file.accessTokenExpiresAt, isNull);
-      expect(
-        fileFromDynamic('pic.png')?.name,
-        'pic.png',
-      );
+      expect(fileFromDynamic('pic.png')?.name, 'pic.png');
       expect(fileFromDynamic({'name': ''}), isNull);
     });
 

@@ -1,5 +1,7 @@
 import 'dart:convert';
 
+import 'models.dart';
+
 Map<String, dynamic> asJsonMap(dynamic raw) {
   if (raw is! Map) return <String, dynamic>{};
   var map = Map<String, dynamic>.from(raw);
@@ -8,6 +10,19 @@ Map<String, dynamic> asJsonMap(dynamic raw) {
     map = Map<String, dynamic>.from(nested);
   }
   return map;
+}
+
+Map<String, dynamic>? iceParametersOf(dynamic raw) {
+  final map = asJsonMap(raw);
+  dynamic params = map['iceParameters'];
+  if (params == null && map['usernameFragment'] != null) params = map;
+  if (params is Map) {
+    final out = Map<String, dynamic>.from(params);
+    final ufrag = '${out['usernameFragment'] ?? ''}'.trim();
+    final password = '${out['password'] ?? ''}'.trim();
+    if (ufrag.isNotEmpty && password.isNotEmpty) return out;
+  }
+  return null;
 }
 
 Map<String, dynamic>? routerRtpCapabilitiesOf(dynamic raw) {
@@ -103,3 +118,118 @@ Map<String, dynamic> voiceProduceMutation({
     if (layers is List && layers.isNotEmpty) 'qualityLayers': layers,
   };
 }
+
+const kVoicePlaybackGrace = Duration(seconds: 4);
+const kVoicePlaybackDeadHold = Duration(seconds: 3);
+const kVoiceAutoRejoinWindow = Duration(seconds: 60);
+const kMaxVoiceAutoRejoins = 2;
+
+class VoicePlaybackHealth {
+  const VoicePlaybackHealth({
+    this.ctxRunning = false,
+    this.keepAlive = false,
+    this.recvState = '',
+    this.sendState = '',
+    this.liveAudioKeys = const [],
+    this.graphKeys = const [],
+  });
+
+  final bool ctxRunning;
+  final bool keepAlive;
+  final String recvState;
+  final String sendState;
+  final List<String> liveAudioKeys;
+  final List<String> graphKeys;
+
+  static const dead = VoicePlaybackHealth();
+
+  factory VoicePlaybackHealth.fromJson(Map json) {
+    List<String> keys(dynamic raw) {
+      if (raw is! List) return const [];
+      return raw.map((e) => '$e').where((s) => s.isNotEmpty).toList();
+    }
+
+    return VoicePlaybackHealth(
+      ctxRunning: json['ctxRunning'] == true,
+      keepAlive: json['keepAlive'] == true,
+      recvState: '${json['recvState'] ?? ''}',
+      sendState: '${json['sendState'] ?? ''}',
+      liveAudioKeys: keys(json['liveAudioKeys']),
+      graphKeys: keys(json['graphKeys']),
+    );
+  }
+}
+
+bool hasUnmutedRemoteVoiceUser({
+  required int? channelId,
+  required int ownUserId,
+  required Map<int, Map<int, VoiceUserState>> voiceMap,
+}) {
+  if (channelId == null) return false;
+  final occupants = voiceMap[channelId];
+  if (occupants == null) return false;
+  for (final e in occupants.entries) {
+    if (e.key == ownUserId) continue;
+    if (!e.value.micMuted && !e.value.serverMuted) return true;
+  }
+  return false;
+}
+
+List<String> expectedRemoteAudioKeys({
+  required int? channelId,
+  required int ownUserId,
+  required Map<int, Map<int, VoiceUserState>> voiceMap,
+  required Map<String, String> consumerKeys,
+}) {
+  if (channelId == null) return const [];
+  final occupants = voiceMap[channelId];
+  if (occupants == null) return const [];
+  final keys = <String>[];
+  for (final e in occupants.entries) {
+    if (e.key == ownUserId) continue;
+    if (e.value.micMuted || e.value.serverMuted) continue;
+    final mapKey = '${e.key}:audio';
+    keys.add(consumerKeys[mapKey] ?? mapKey);
+  }
+  return keys;
+}
+
+bool shouldReceiveVoiceAudio({
+  required String voiceState,
+  required bool soundMuted,
+  required bool hasUnmutedRemote,
+}) => voiceState == 'connected' && !soundMuted && hasUnmutedRemote;
+
+bool isVoicePlaybackHealthy({
+  required VoicePlaybackHealth health,
+  required Iterable<String> expectedAudioKeys,
+}) {
+  if (!health.ctxRunning || !health.keepAlive) return false;
+  if (health.recvState == 'failed' || health.recvState == 'disconnected') {
+    return false;
+  }
+  final live = health.liveAudioKeys.toSet();
+  final graphs = health.graphKeys.toSet();
+  for (final key in expectedAudioKeys) {
+    if (!live.contains(key) || !graphs.contains(key)) return false;
+  }
+  return true;
+}
+
+int rejoinsInVoiceWindow(List<DateTime> times, DateTime now) {
+  times.removeWhere((t) => now.difference(t) > kVoiceAutoRejoinWindow);
+  return times.length;
+}
+
+bool shouldSilentRejoinVoice({
+  required bool shouldReceive,
+  required bool playbackHealthy,
+  required bool pastGrace,
+  required bool heldDead,
+  required int rejoinsInWindow,
+}) =>
+    shouldReceive &&
+    !playbackHealthy &&
+    pastGrace &&
+    heldDead &&
+    rejoinsInWindow < kMaxVoiceAutoRejoins;

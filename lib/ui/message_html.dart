@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import '../core/custom_emoji.dart';
 import '../core/emoji_codec.dart';
 import '../protocol/mentions.dart';
+import '../protocol/models.dart';
 import 'emoji_glyph.dart';
 
 const kMessageFontSize = 16.0;
@@ -20,7 +21,9 @@ class MessageBody extends StatelessWidget {
     required this.linkColor,
     this.ownUserId,
     this.customEmojis = const [],
+    this.mentionUsers,
     this.onLink,
+    this.onMention,
   });
 
   final String html;
@@ -28,7 +31,9 @@ class MessageBody extends StatelessWidget {
   final Color linkColor;
   final int? ownUserId;
   final List<CustomEmoji> customEmojis;
+  final Map<int, KurierUser>? mentionUsers;
   final ValueChanged<String>? onLink;
+  final void Function(int userId, Offset globalPosition)? onMention;
 
   @override
   Widget build(BuildContext context) {
@@ -41,7 +46,9 @@ class MessageBody extends StatelessWidget {
       selfMentionBg: linkColor.withValues(alpha: 0.10),
       ownUserId: ownUserId,
       customEmojis: customEmojis,
+      mentionUsers: mentionUsers,
       onLink: onLink,
+      onMention: onMention,
     );
     if (spans.isEmpty) return const SizedBox.shrink();
     final hasWidgets = spans.any((s) => s is WidgetSpan);
@@ -75,12 +82,15 @@ List<InlineSpan> messageHtmlSpans(
   Color? selfMentionBg,
   int? ownUserId,
   List<CustomEmoji> customEmojis = const [],
+  Map<int, KurierUser>? mentionUsers,
   ValueChanged<String>? onLink,
+  void Function(int userId, Offset globalPosition)? onMention,
 }) {
   final tokens = _tokenize(html);
   final spans = <InlineSpan>[];
   final styles = <_HtmlStyle>[];
   var pendingBreak = false;
+  var liveMentionEmitted = false;
 
   void flushBreak() {
     if (pendingBreak && spans.isNotEmpty) {
@@ -91,14 +101,30 @@ List<InlineSpan> messageHtmlSpans(
 
   void pushText(String raw) {
     if (raw.isEmpty) return;
-    final text = _decodeEntities(raw);
+    var text = _decodeEntities(raw);
     if (text.isEmpty) return;
     flushBreak();
     final style = styles.isEmpty ? const _HtmlStyle() : styles.last;
+    final mentionId = style.mention ? style.mentionUserId : null;
+    final mentionUser =
+        mentionId == null || mentionUsers == null ? null : mentionUsers[mentionId];
+    if (mentionUser != null) {
+      if (liveMentionEmitted) return;
+      liveMentionEmitted = true;
+      text = '@${mentionUser.displayName}';
+    }
     TapGestureRecognizer? recognizer;
     if (style.href != null && onLink != null) {
       final href = style.href!;
       recognizer = TapGestureRecognizer()..onTap = () => onLink(href);
+    } else if (style.mentionUserId != null && onMention != null) {
+      Offset? pos;
+      final userId = style.mentionUserId!;
+      recognizer = TapGestureRecognizer()
+        ..onTapDown = (d) {
+          pos = d.globalPosition;
+        }
+        ..onTap = () => onMention(userId, pos ?? Offset.zero);
     }
     final isSelfMention = style.mention &&
         (style.mentionKind == 'everyone' ||
@@ -176,7 +202,10 @@ List<InlineSpan> messageHtmlSpans(
     final name = tag.name;
     if (tag.closing) {
       if (name == 'span' && skipEmojiSpanText) skipEmojiSpanText = false;
-      if (styles.isNotEmpty) styles.removeLast();
+      if (styles.isNotEmpty) {
+        final popped = styles.removeLast();
+        if (popped.mention) liveMentionEmitted = false;
+      }
       if (name == 'p' ||
           name == 'div' ||
           name == 'pre' ||

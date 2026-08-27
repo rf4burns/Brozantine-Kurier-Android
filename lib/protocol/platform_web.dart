@@ -90,6 +90,12 @@ external void _closeConsumer(JSString key);
 @JS('KurierMediasoup.closeAll')
 external void _closeAll();
 
+@JS('KurierMediasoup.restartIce')
+external JSPromise<JSAny?> _restartIce(JSString direction, JSString params);
+
+@JS('KurierMediasoup.playbackHealthy')
+external JSPromise<JSAny?> _playbackHealthy();
+
 @JS('KurierMediasoup.setConsumerVolume')
 external void _setVolume(JSString key, JSNumber volume);
 
@@ -117,8 +123,14 @@ external JSPromise<JSAny?> _unlock();
 @JS('KurierMediasoup.resumePlayback')
 external void _resumePlayback();
 
-@JS('KurierMediasoup.playPing')
-external void _playPing();
+@JS('KurierSounds')
+external JSObject? get _sounds;
+
+@JS('KurierSounds.playSound')
+external void _playSound(JSString type);
+
+@JS('KurierSounds.stopKeepAlive')
+external void _stopSoundKeepAlive();
 
 @JS('KurierMediasoup.notify')
 external void _notify(JSString title, JSString body);
@@ -274,6 +286,30 @@ class PlatformBridge {
   static bool get audioProducerLive => available && _audioProducerLive().toDart;
   static void closeConsumer(String key) => _closeConsumer(key.toJS);
   static void closeAll() => _closeAll();
+
+  static Future<void> restartIce(
+    String direction,
+    Map<String, dynamic> iceParameters,
+  ) async {
+    if (!available) return;
+    await _awaitPacked(
+      _restartIce(direction.toJS, jsonEncode(iceParameters).toJS),
+    );
+  }
+
+  static Future<VoicePlaybackHealth> playbackHealth() async {
+    if (!available) return VoicePlaybackHealth.dead;
+    try {
+      final raw = await _awaitPacked(_playbackHealthy());
+      if (raw.isEmpty) return VoicePlaybackHealth.dead;
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map) return VoicePlaybackHealth.dead;
+      return VoicePlaybackHealth.fromJson(decoded);
+    } catch (_) {
+      return VoicePlaybackHealth.dead;
+    }
+  }
+
   static void setVolume(String key, double volume) =>
       _setVolume(key.toJS, volume.toJS);
 
@@ -334,8 +370,16 @@ class PlatformBridge {
     if (available) _resumePlayback();
   }
 
+  static void playSound(String type) {
+    if (_sounds != null) _playSound(type.toJS);
+  }
+
   static void playPing() {
-    if (available) _playPing();
+    playSound('message_received');
+  }
+
+  static void stopSoundKeepAlive() {
+    if (_sounds != null) _stopSoundKeepAlive();
   }
 
   static void notify(String title, String body) {

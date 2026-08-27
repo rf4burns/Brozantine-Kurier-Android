@@ -744,7 +744,12 @@ class MessageTile extends StatelessWidget {
                     linkColor: context.k.accent,
                     ownUserId: s.ownUserId,
                     customEmojis: s.customEmojis,
+                    mentionUsers: s.users,
                     onLink: (url) => launchUrl(Uri.parse(url)),
+                    onMention: (userId, pos) {
+                      final user = s.users[userId];
+                      if (user != null) s.showProfile(user, anchor: pos);
+                    },
                   ),
                 if (showFiles)
                   for (final f in message.files) _file(context, s, f),

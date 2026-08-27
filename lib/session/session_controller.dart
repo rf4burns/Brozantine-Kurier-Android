@@ -19,6 +19,7 @@ import '../protocol/models.dart';
 import '../protocol/permissions.dart';
 import '../protocol/platform.dart';
 import '../protocol/search_query.dart';
+import '../protocol/sounds.dart';
 import '../protocol/trpc_client.dart';
 import '../protocol/voice_protocol.dart';
 import '../protocol/voice_stats.dart';
@@ -118,6 +119,18 @@ class SessionController extends ChangeNotifier {
   final localUserVolumes = <int, double>{};
   final speaking = <int, int>{};
   final watchingStreams = <String>{};
+  String _sendConnState = '';
+  String _recvConnState = '';
+  Timer? _iceDisconnectedSend;
+  Timer? _iceDisconnectedRecv;
+  DateTime? _voiceConnectedAt;
+  DateTime? _playbackDeadSince;
+  bool _didLightPlaybackRecovery = false;
+  bool _silentRejoining = false;
+  bool _checkingPlayback = false;
+  bool _closingByUser = false;
+  DateTime? _ignoreOwnVoiceLeaveUntil;
+  final _autoRejoinAt = <DateTime>[];
 
   bool get simulcastEnabled => asBool(publicSettings['webRtcSimulcastEnabled']);
 
@@ -339,6 +352,9 @@ class SessionController extends ChangeNotifier {
       );
       trpc!.onClose = (code, reason) {
         if (phase != SessionPhase.ready) return;
+        if (!_closingByUser) {
+          PlatformBridge.playSound(KurierSoundType.serverDisconnected);
+        }
         disconnectCode = code;
         disconnectReason = reason;
         phase = SessionPhase.disconnected;
@@ -591,6 +607,8 @@ class SessionController extends ChangeNotifier {
           _trackIncomingMention(incoming);
           _notifyIncoming(incoming);
         }
+      } else if (incoming.parentMessageId == threadParentId) {
+        _notifyIncoming(incoming);
       }
     }
     if (threadParentId != null &&
@@ -625,11 +643,9 @@ class SessionController extends ChangeNotifier {
   }
 
   void _notifyIncoming(KurierMessage msg) {
-    if (msg.userId == ownUserId) return;
     final mentioned = hasMention(msg.content, ownUserId);
     final isDm = channels[msg.channelId]?.isDm ?? false;
     final level = notificationOverrides[msg.channelId];
-    if (level == 'nothing') return;
     final replyToMe =
         msg.replyTo?.userId == ownUserId ||
         (msg.replyToMessageId != null &&
@@ -637,21 +653,28 @@ class SessionController extends ChangeNotifier {
                   (m) => m.id == msg.replyToMessageId && m.userId == ownUserId,
                 ) ==
                 true);
-    if (store.notifyAll ||
-        (store.notifyMentions && mentioned) ||
-        (store.notifyDm && isDm) ||
-        (store.notifyReplies && replyToMe) ||
-        level == 'all' ||
-        (level == 'mentions' && mentioned)) {
+    if (msg.userId != ownUserId &&
+        level != 'nothing' &&
+        (store.notifyAll ||
+            (store.notifyMentions && mentioned) ||
+            (store.notifyDm && isDm) ||
+            (store.notifyReplies && replyToMe) ||
+            level == 'all' ||
+            (level == 'mentions' && mentioned))) {
       final user = users[msg.userId];
       PlatformBridge.notify(
         user?.displayName ?? 'Kurier',
         htmlToPlainText(msg.content ?? ''),
       );
     }
-    if ((mentioned && store.soundMention) ||
-        (store.soundMessage && !mentioned)) {
-      PlatformBridge.playPing();
+    if (shouldPlayIncomingMessageSound(
+      isOwn: msg.userId == ownUserId,
+      mentioned: mentioned,
+      channelOverride: level,
+      soundMention: store.soundMention,
+      soundMessage: store.soundMessage,
+    )) {
+      PlatformBridge.playSound(KurierSoundType.messageReceived);
     }
   }
 
@@ -846,6 +869,7 @@ class SessionController extends ChangeNotifier {
     occupiedSince[cid] = asInt(m['occupiedSince']) ?? occupiedSince[cid];
     notifyListeners();
     if (uid != ownUserId && cid == connectedVoiceChannelId) {
+      PlatformBridge.playSound(KurierSoundType.remoteUserJoinedVoiceChannel);
       _scheduleProducerResync();
     }
   }
@@ -854,11 +878,19 @@ class SessionController extends ChangeNotifier {
     final m = _map(d);
     final cid = asInt(m['channelId']);
     final uid = asInt(m['userId']);
+    if (uid == ownUserId &&
+        (_silentRejoining ||
+            (_ignoreOwnVoiceLeaveUntil != null &&
+                DateTime.now().isBefore(_ignoreOwnVoiceLeaveUntil!)))) {
+      return;
+    }
     if (cid != null && uid != null) voiceMap[cid]?.remove(uid);
     if (uid == ownUserId &&
         connectedVoiceChannelId == cid &&
         voiceState != 'connecting') {
       _resetVoiceLocal();
+    } else if (uid != ownUserId && cid == connectedVoiceChannelId) {
+      PlatformBridge.playSound(KurierSoundType.remoteUserLeftVoiceChannel);
     }
     notifyListeners();
   }
@@ -868,9 +900,18 @@ class SessionController extends ChangeNotifier {
     final cid = asInt(m['channelId']);
     final uid = asInt(m['userId']);
     if (cid == null || uid == null) return;
-    voiceMap[cid]?[uid] = VoiceUserState.fromJson(
+    final prevSharing = voiceMap[cid]?[uid]?.sharingScreen ?? false;
+    final next = VoiceUserState.fromJson(
       m['state'] is Map ? Map<String, dynamic>.from(m['state'] as Map) : m,
     );
+    voiceMap[cid]?[uid] = next;
+    if (uid != ownUserId && cid == connectedVoiceChannelId) {
+      if (next.sharingScreen && !prevSharing) {
+        PlatformBridge.playSound(KurierSoundType.remoteUserStartedScreenshare);
+      } else if (!next.sharingScreen && prevSharing) {
+        PlatformBridge.playSound(KurierSoundType.remoteUserStoppedScreenshare);
+      }
+    }
     notifyListeners();
   }
 
@@ -1454,6 +1495,7 @@ class SessionController extends ChangeNotifier {
       });
       messages[cid]?.removeWhere((m) => m.id == optimisticId);
       threadMessages.removeWhere((m) => m.id == optimisticId);
+      PlatformBridge.playSound(KurierSoundType.messageSent);
     } catch (e) {
       messages[cid]?.removeWhere((m) => m.id == optimisticId);
       threadMessages.removeWhere((m) => m.id == optimisticId);
@@ -1909,7 +1951,13 @@ class SessionController extends ChangeNotifier {
     PlatformBridge.resumePlayback();
     voiceState = 'connected';
     voiceError = null;
+    _voiceConnectedAt = DateTime.now();
+    _playbackDeadSince = null;
+    _didLightPlaybackRecovery = false;
     _startVoiceStats();
+    if (!_silentRejoining) {
+      PlatformBridge.playSound(KurierSoundType.ownUserJoinedVoiceChannel);
+    }
   }
 
   Future<void> _failVoice(Object e) async {
@@ -2163,17 +2211,7 @@ class SessionController extends ChangeNotifier {
               : '${_map(raw)['id'] ?? _map(raw)['producerId'] ?? raw}';
           PlatformBridge.finishProduce(id.isEmpty ? null : id);
         } else if (name == 'sendState' || name == 'recvState') {
-          if (payload == 'failed' || payload == 'disconnected') {
-            try {
-              await trpc!.mutate('voice.restartIce', {
-                'direction': name == 'sendState' ? 'send' : 'recv',
-              });
-            } catch (_) {}
-          } else if (name == 'recvState' && payload == 'connected') {
-            _completeRecvConnected();
-            PlatformBridge.resumePlayback();
-            await _resyncRemoteProducers();
-          }
+          _onTransportConnState(name, payload);
         } else if (name == 'visibility' && payload == 'visible') {
           await _restartIceBoth();
           PlatformBridge.resumePlayback();
@@ -2228,10 +2266,15 @@ class SessionController extends ChangeNotifier {
   }
 
   Future<void> leaveVoice() async {
+    _autoRejoinAt.clear();
+    final wasConnected = connectedVoiceChannelId != null;
     try {
       await trpc?.mutate('voice.leave');
     } catch (_) {}
     _resetVoiceLocal();
+    if (wasConnected && !_silentRejoining) {
+      PlatformBridge.playSound(KurierSoundType.ownUserLeftVoiceChannel);
+    }
     notifyListeners();
   }
 
@@ -2249,6 +2292,15 @@ class SessionController extends ChangeNotifier {
     _completeRecvConnected();
     _recvConnected = null;
     _stopVoiceStats();
+    _sendConnState = '';
+    _recvConnState = '';
+    _iceDisconnectedSend?.cancel();
+    _iceDisconnectedRecv?.cancel();
+    _iceDisconnectedSend = null;
+    _iceDisconnectedRecv = null;
+    _voiceConnectedAt = null;
+    _playbackDeadSince = null;
+    _didLightPlaybackRecovery = false;
   }
 
   @visibleForTesting
@@ -2279,10 +2331,14 @@ class SessionController extends ChangeNotifier {
     transportStats = next;
     voiceRttMs = next.rttMs;
     notifyListeners();
+    await _checkVoicePlaybackHealth();
   }
 
   Future<void> setMicMuted(bool v) async {
     micMuted = v;
+    PlatformBridge.playSound(
+      v ? KurierSoundType.ownUserMutedMic : KurierSoundType.ownUserUnmutedMic,
+    );
     if (v) {
       PlatformBridge.pauseMic(true);
       _setSpeaking(ownUserId, 0);
@@ -2295,6 +2351,11 @@ class SessionController extends ChangeNotifier {
 
   Future<void> setSoundMuted(bool v) async {
     soundMuted = v;
+    PlatformBridge.playSound(
+      v
+          ? KurierSoundType.ownUserMutedSound
+          : KurierSoundType.ownUserUnmutedSound,
+    );
     if (v) {
       micMuted = true;
       _setSpeaking(ownUserId, 0);
@@ -2323,6 +2384,7 @@ class SessionController extends ChangeNotifier {
       PlatformBridge.closeProducer(StreamKind.video);
       await trpc!.mutate('voice.closeProducer', {'kind': StreamKind.video});
       webcam = false;
+      PlatformBridge.playSound(KurierSoundType.ownUserStoppedWebcam);
     } else {
       if (!canEnableWebcam()) {
         notifyMissingPermission();
@@ -2333,6 +2395,7 @@ class SessionController extends ChangeNotifier {
         simulcast: simulcastEnabled,
       );
       webcam = true;
+      PlatformBridge.playSound(KurierSoundType.ownUserStartedWebcam);
     }
     await _syncVoiceState();
     notifyListeners();
@@ -2362,6 +2425,7 @@ class SessionController extends ChangeNotifier {
         } catch (_) {}
       }
       sharing = true;
+      PlatformBridge.playSound(KurierSoundType.ownUserStartedScreenshare);
       await _syncVoiceState();
       notifyListeners();
     }
@@ -2375,18 +2439,76 @@ class SessionController extends ChangeNotifier {
     } catch (_) {}
     if (!sharing) return;
     sharing = false;
+    PlatformBridge.playSound(KurierSoundType.ownUserStoppedScreenshare);
     await _syncVoiceState();
     notifyListeners();
   }
 
   Future<void> _restartIceBoth() async {
     if (connectedVoiceChannelId == null) return;
+    if (_isConnBad(_sendConnState)) {
+      await _restartIceDirection('send');
+    }
+    if (_isConnBad(_recvConnState)) {
+      await _restartIceDirection('recv');
+    }
+  }
+
+  bool _isConnBad(String state) => state == 'failed' || state == 'disconnected';
+
+  void _onTransportConnState(String name, String payload) {
+    if (name == 'sendState') {
+      _sendConnState = payload;
+      _armIceRestart(send: true, state: payload);
+    } else {
+      _recvConnState = payload;
+      _armIceRestart(send: false, state: payload);
+    }
+    if (name == 'recvState' && payload == 'connected') {
+      _completeRecvConnected();
+      PlatformBridge.resumePlayback();
+      unawaited(_resyncRemoteProducers());
+    }
+  }
+
+  void _armIceRestart({required bool send, required String state}) {
+    final timer = send ? _iceDisconnectedSend : _iceDisconnectedRecv;
+    timer?.cancel();
+    if (send) {
+      _iceDisconnectedSend = null;
+    } else {
+      _iceDisconnectedRecv = null;
+    }
+    if (state == 'failed') {
+      unawaited(_restartIceDirection(send ? 'send' : 'recv'));
+      return;
+    }
+    if (state != 'disconnected') return;
+    final next = Timer(const Duration(seconds: 2), () {
+      final current = send ? _sendConnState : _recvConnState;
+      if (current != 'connected' && current != 'connecting') {
+        unawaited(_restartIceDirection(send ? 'send' : 'recv'));
+      }
+    });
+    if (send) {
+      _iceDisconnectedSend = next;
+    } else {
+      _iceDisconnectedRecv = next;
+    }
+  }
+
+  Future<void> _restartIceDirection(String direction) async {
+    if (connectedVoiceChannelId == null || trpc == null) return;
     try {
-      await trpc!.mutate('voice.restartIce', {'direction': 'send'});
-    } catch (_) {}
-    try {
-      await trpc!.mutate('voice.restartIce', {'direction': 'recv'});
-    } catch (_) {}
+      final raw = await trpc!.mutate('voice.restartIce', {
+        'direction': direction,
+      });
+      final params = iceParametersOf(raw);
+      if (params == null) return;
+      await PlatformBridge.restartIce(direction, params);
+    } catch (e) {
+      _log('restartIce $direction: $e');
+    }
   }
 
   Future<void> _waitForRecvConnected() async {
@@ -2430,6 +2552,136 @@ class SessionController extends ChangeNotifier {
       t.cancel();
     }
     _producerResyncs.clear();
+  }
+
+  Future<void> _checkVoicePlaybackHealth() async {
+    if (_checkingPlayback || _silentRejoining || voiceState != 'connected') {
+      return;
+    }
+    _checkingPlayback = true;
+    try {
+      final shouldReceive = shouldReceiveVoiceAudio(
+        voiceState: voiceState,
+        soundMuted: soundMuted,
+        hasUnmutedRemote: hasUnmutedRemoteVoiceUser(
+          channelId: connectedVoiceChannelId,
+          ownUserId: ownUserId,
+          voiceMap: voiceMap,
+        ),
+      );
+      if (!shouldReceive) {
+        _playbackDeadSince = null;
+        _didLightPlaybackRecovery = false;
+        return;
+      }
+      final health = await PlatformBridge.playbackHealth();
+      if (voiceState != 'connected') return;
+      final expected = expectedRemoteAudioKeys(
+        channelId: connectedVoiceChannelId,
+        ownUserId: ownUserId,
+        voiceMap: voiceMap,
+        consumerKeys: consumerKeys,
+      );
+      final healthy = isVoicePlaybackHealthy(
+        health: health,
+        expectedAudioKeys: expected,
+      );
+      final now = DateTime.now();
+      if (healthy) {
+        _playbackDeadSince = null;
+        _didLightPlaybackRecovery = false;
+        return;
+      }
+      final connectedAt = _voiceConnectedAt;
+      final pastGrace =
+          connectedAt != null &&
+          now.difference(connectedAt) >= kVoicePlaybackGrace;
+      if (!pastGrace) return;
+      _playbackDeadSince ??= now;
+      if (!_didLightPlaybackRecovery) {
+        _didLightPlaybackRecovery = true;
+        PlatformBridge.resumePlayback();
+        await _resyncRemoteProducers();
+        await _restartIceBoth();
+        return;
+      }
+      final heldDead =
+          now.difference(_playbackDeadSince!) >= kVoicePlaybackDeadHold;
+      if (!shouldSilentRejoinVoice(
+        shouldReceive: shouldReceive,
+        playbackHealthy: healthy,
+        pastGrace: pastGrace,
+        heldDead: heldDead,
+        rejoinsInWindow: rejoinsInVoiceWindow(_autoRejoinAt, now),
+      )) {
+        return;
+      }
+      await _silentRejoinVoice();
+    } finally {
+      _checkingPlayback = false;
+    }
+  }
+
+  Future<void> _silentRejoinVoice() async {
+    final channelId = connectedVoiceChannelId;
+    if (channelId == null || _silentRejoining) return;
+    _silentRejoining = true;
+    _autoRejoinAt.add(DateTime.now());
+    _ignoreOwnVoiceLeaveUntil = DateTime.now().add(const Duration(seconds: 4));
+    final keepMic = micMuted;
+    final keepSound = soundMuted;
+    final keepCam = webcam;
+    try {
+      voiceState = 'connecting';
+      notifyListeners();
+      try {
+        await trpc?.mutate('voice.leave');
+      } catch (_) {}
+      _resetVoiceLocal();
+      voiceState = 'connecting';
+      micMuted = keepMic;
+      soundMuted = keepSound;
+      await Future<void>.delayed(const Duration(milliseconds: 400));
+      try {
+        await PlatformBridge.unlockAudio();
+      } catch (_) {}
+      var haveMic = false;
+      try {
+        await PlatformBridge.getUserMedia(
+          audio: true,
+          deviceId: store.micDevice,
+          audioConstraints: store.audioConstraints(),
+        );
+        haveMic = true;
+      } catch (e) {
+        _log('silent rejoin getUserMedia: $e');
+      }
+      try {
+        await PlatformBridge.ensureReady();
+        await _establishVoice(channelId, haveMic: haveMic);
+        if (keepCam && voiceState == 'connected') {
+          try {
+            await PlatformBridge.produce(
+              StreamKind.video,
+              simulcast: simulcastEnabled,
+            );
+            webcam = true;
+            await _syncVoiceState();
+          } catch (e) {
+            _log('silent rejoin webcam: $e');
+          }
+        }
+      } catch (e) {
+        _log('silent rejoin: $e');
+        try {
+          await trpc?.mutate('voice.leave');
+        } catch (_) {}
+        _resetVoiceLocal();
+      }
+    } finally {
+      _silentRejoining = false;
+      notifyListeners();
+    }
   }
 
   Future<void> ensureAudioProducer() async {
@@ -2499,8 +2751,10 @@ class SessionController extends ChangeNotifier {
   }
 
   Future<void> disconnect({bool forgetToken = true}) async {
+    _closingByUser = true;
     _typingSweep?.cancel();
     _stopVoiceStats();
+    PlatformBridge.stopSoundKeepAlive();
     for (final s in _subs) {
       await s.cancel();
     }
@@ -2530,6 +2784,7 @@ class SessionController extends ChangeNotifier {
     jumpTargetMessageId = null;
     selectedChannelId = null;
     phase = SessionPhase.login;
+    _closingByUser = false;
     notifyListeners();
   }
 

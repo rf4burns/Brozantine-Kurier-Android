@@ -104,7 +104,7 @@ class HostsStore {
   bool get notifyReplies => _p?.getBool(_notifyRepliesKey) ?? false;
   bool get soundMention => _p?.getBool(_soundMentionKey) ?? true;
   bool get soundMessage => _p?.getBool(_soundMessageKey) ?? false;
-  bool get autoJoin => _p?.getBool(_autoJoinKey) ?? true;
+  bool get autoJoin => _p?.getBool(_autoJoinKey) ?? false;
   bool get compact => _p?.getBool(_compactKey) ?? false;
   bool get ptt => _p?.getBool(_pttKey) ?? false;
   bool get echoCancellation => _p?.getBool(_echoKey) ?? true;

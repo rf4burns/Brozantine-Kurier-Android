@@ -1,3 +1,4 @@
+import 'voice_protocol.dart';
 import 'voice_stats.dart';
 
 class MediaDeviceInfo {
@@ -61,6 +62,12 @@ class PlatformBridge {
   static bool get audioProducerLive => false;
   static void closeConsumer(String key) {}
   static void closeAll() {}
+  static Future<void> restartIce(
+    String direction,
+    Map<String, dynamic> iceParameters,
+  ) async {}
+  static Future<VoicePlaybackHealth> playbackHealth() async =>
+      VoicePlaybackHealth.dead;
   static void setVolume(String key, double volume) {}
   static void bindMediaElement(String key, Object el) {}
   static Future<MediaStats> getMediaStats(String key) async =>
@@ -70,7 +77,9 @@ class PlatformBridge {
   static Future<List<MediaDeviceInfo>> enumerate() async => const [];
   static Future<void> unlockAudio() async {}
   static void resumePlayback() {}
+  static void playSound(String type) {}
   static void playPing() {}
+  static void stopSoundKeepAlive() {}
   static void notify(String title, String body) {}
   static Future<String> requestNotifications() async => 'unsupported';
   static String notificationPermission() => 'unsupported';

@@ -8,6 +8,7 @@ import '../app/theme.dart';
 import '../protocol/config.dart';
 import '../protocol/permissions.dart';
 import '../protocol/platform.dart';
+import '../protocol/sounds.dart';
 import '../session/session_controller.dart';
 import 'media_stream_view_stub.dart'
     if (dart.library.js_interop) 'media_stream_view_web.dart';
@@ -85,9 +86,12 @@ class ProfileSettingsTab extends StatefulWidget {
 class _ProfileSettingsTabState extends State<ProfileSettingsTab> {
   late final name = TextEditingController(text: widget.s.me?.name ?? '');
   late final nick = TextEditingController(text: widget.s.me?.nickname ?? '');
-  late final pronouns = TextEditingController(text: widget.s.me?.pronouns ?? '');
-  late final status =
-      TextEditingController(text: widget.s.me?.statusMessage ?? '');
+  late final pronouns = TextEditingController(
+    text: widget.s.me?.pronouns ?? '',
+  );
+  late final status = TextEditingController(
+    text: widget.s.me?.statusMessage ?? '',
+  );
   late final bio = TextEditingController(text: widget.s.me?.bio ?? '');
   late String color = widget.s.me?.profileColor ?? '#262626';
 
@@ -151,11 +155,7 @@ class _ProfileSettingsTabState extends State<ProfileSettingsTab> {
         const SizedBox(height: 16),
         SettingsGroup(
           label: l('bio'),
-          child: KurierField(
-            controller: bio,
-            hint: l('bioHint'),
-            maxLines: 4,
-          ),
+          child: KurierField(controller: bio, hint: l('bioHint'), maxLines: 4),
         ),
         SettingsActions(
           cancelLabel: l('cancel'),
@@ -246,7 +246,7 @@ class _AvatarBannerRow extends StatelessWidget {
 
   final SessionController s;
   final Future<void> Function(SessionController s, {required bool avatar})
-      onPick;
+  onPick;
   final Future<void> Function() onRemoveAvatar;
 
   @override
@@ -262,7 +262,12 @@ class _AvatarBannerRow extends StatelessWidget {
           children: [
             GestureDetector(
               onTap: () => onPick(s, avatar: true),
-              child: UserAvatar(user: me, session: s, size: 80, showStatus: false),
+              child: UserAvatar(
+                user: me,
+                session: s,
+                size: 80,
+                showStatus: false,
+              ),
             ),
             const SizedBox(width: 12),
             Expanded(
@@ -429,9 +434,9 @@ class _DevicesSettingsTabState extends State<DevicesSettingsTab> {
     final defaultLabel = l('defaultDevice');
 
     DropdownMenuItem<String> item(String id, String label) => DropdownMenuItem(
-          value: id,
-          child: Text(label.isEmpty ? id : label, overflow: TextOverflow.ellipsis),
-        );
+      value: id,
+      child: Text(label.isEmpty ? id : label, overflow: TextOverflow.ellipsis),
+    );
 
     return SettingsCard(
       title: l('devicesTitle'),
@@ -472,10 +477,7 @@ class _DevicesSettingsTabState extends State<DevicesSettingsTab> {
           label: l('inputMode'),
           child: SettingsChoiceCards(
             value: store.ptt ? 'ptt' : 'vad',
-            options: [
-              ('vad', l('voiceActivity')),
-              ('ptt', l('pushToTalk')),
-            ],
+            options: [('vad', l('voiceActivity')), ('ptt', l('pushToTalk'))],
             onChanged: (v) => _persist(() => store.setPtt(v == 'ptt')),
           ),
         ),
@@ -525,7 +527,8 @@ class _DevicesSettingsTabState extends State<DevicesSettingsTab> {
           onChanged: (v) => _persist(() => store.setAttenuateOthers(v)),
         ),
         SettingsGroup(
-          label: '${l('attenuationAmount')} (${store.attenuationAmount.round()}%)',
+          label:
+              '${l('attenuationAmount')} (${store.attenuationAmount.round()}%)',
           child: SettingsSlider(
             value: store.attenuationAmount,
             onChanged: (v) async {
@@ -747,46 +750,70 @@ class _SoundLibraryBody extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final l = L10n.of(context);
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Text(
-          title,
-          style: TextStyle(
-            color: context.p.foreground,
-            fontSize: 18,
-            fontWeight: FontWeight.w700,
+    final maxH = MediaQuery.sizeOf(context).height * 0.7;
+    return ListenableBuilder(
+      listenable: s,
+      builder: (context, _) {
+        return ConstrainedBox(
+          constraints: BoxConstraints(maxHeight: maxH),
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(
+                  title,
+                  style: TextStyle(
+                    color: context.p.foreground,
+                    fontSize: 18,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                SettingsToggleRow(
+                  label: l('mentionSound'),
+                  value: s.store.soundMention,
+                  onChanged: (v) async {
+                    await s.store.setSoundMention(v);
+                    s.refresh();
+                  },
+                ),
+                const SizedBox(height: 8),
+                SettingsToggleRow(
+                  label: l('messageSound'),
+                  value: s.store.soundMessage,
+                  onChanged: (v) async {
+                    await s.store.setSoundMessage(v);
+                    s.refresh();
+                  },
+                ),
+                const SizedBox(height: 16),
+                for (final type in KurierSoundType.all) ...[
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          l(KurierSoundType.l10nKeys[type] ?? type),
+                          style: TextStyle(
+                            color: context.p.foreground,
+                            fontSize: 14,
+                          ),
+                        ),
+                      ),
+                      KurierButton(
+                        label: l('playSound'),
+                        outline: true,
+                        onPressed: () => PlatformBridge.playSound(type),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                ],
+              ],
+            ),
           ),
-        ),
-        const SizedBox(height: 16),
-        SettingsToggleRow(
-          label: l('mentionSound'),
-          value: s.store.soundMention,
-          onChanged: (v) async {
-            await s.store.setSoundMention(v);
-            s.refresh();
-          },
-        ),
-        const SizedBox(height: 8),
-        Align(
-          alignment: Alignment.centerLeft,
-          child: KurierButton(
-            label: l('startTest'),
-            outline: true,
-            onPressed: PlatformBridge.playPing,
-          ),
-        ),
-        const SizedBox(height: 16),
-        SettingsToggleRow(
-          label: l('messageSound'),
-          value: s.store.soundMessage,
-          onChanged: (v) async {
-            await s.store.setSoundMessage(v);
-            s.refresh();
-          },
-        ),
-      ],
+        );
+      },
     );
   }
 }

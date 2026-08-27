@@ -12,6 +12,7 @@ import 'package:kurier_web/ui/settings_chrome.dart';
 import 'package:kurier_web/protocol/config.dart';
 import 'package:kurier_web/protocol/models.dart';
 import 'package:kurier_web/protocol/permissions.dart';
+import 'package:kurier_web/protocol/sounds.dart';
 import 'package:kurier_web/protocol/voice_stats.dart';
 import 'package:kurier_web/session/hosts_store.dart';
 import 'package:kurier_web/session/session_controller.dart';
@@ -220,11 +221,7 @@ void main() {
     expect(find.text('Direct Messages'), findsOneWidget);
     expect(find.text('hello overlay'), findsNothing);
 
-    await tester.fling(
-      find.text('Direct Messages'),
-      const Offset(300, 0),
-      800,
-    );
+    await tester.fling(find.text('Direct Messages'), const Offset(300, 0), 800);
     await tester.pumpAndSettle();
     expect(s.showingDms, isFalse);
     expect(s.selectedChannelId, 10);
@@ -313,6 +310,40 @@ void main() {
     expect(find.text('Holy Broman Empire Bot'), findsOneWidget);
     expect(find.text('Unknown user'), findsNothing);
     expect(find.text('BOT'), findsNothing);
+  });
+
+  testWidgets('message mentions use the live nickname', (tester) async {
+    tester.view.physicalSize = const Size(1280, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final s = _readySession(
+      selectedChannelId: 10,
+      messages: [
+        KurierMessage(
+          id: 40,
+          channelId: 10,
+          createdAt: 0,
+          content:
+              '<p>Hey <span data-type="mention" data-user-id="1">@Ada</span> Welcome to the Holy Broman Empire</p>',
+        ),
+      ],
+    );
+    s.serverName = 'Holy Broman Empire';
+
+    await tester.pumpWidget(_app(s));
+    await tester.pump();
+
+    expect(find.textContaining('@Ada'), findsOneWidget);
+    expect(find.textContaining('@Gordon'), findsNothing);
+
+    s.users[1] = s.users[1]!.copyWith(nickname: 'Gordon');
+    s.refresh();
+    await tester.pump();
+
+    expect(find.textContaining('@Gordon'), findsOneWidget);
+    expect(find.textContaining('@Ada'), findsNothing);
   });
 
   testWidgets('plugin messages show plugin name and BOT badge', (tester) async {
@@ -2316,6 +2347,16 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Open sound library'), findsOneWidget);
 
+    await tester.tap(find.text('Open sound library'));
+    await tester.pumpAndSettle();
+    expect(find.text('Sound library'), findsOneWidget);
+    expect(find.text('Mention sound'), findsOneWidget);
+    expect(find.text('Message sound'), findsOneWidget);
+    expect(find.text('Play'), findsNWidgets(KurierSoundType.all.length));
+    expect(find.text('Message received'), findsOneWidget);
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pumpAndSettle();
+
     await tester.tap(find.text('Notifications').first);
     await tester.pumpAndSettle();
     expect(find.text('Replies to me'), findsOneWidget);
@@ -3100,6 +3141,38 @@ void main() {
     expect(s.profileUser, isNull);
     expect(s.profileAnchor, isNull);
     expect(find.byKey(const ValueKey('profile-popout')), findsNothing);
+  });
+
+  testWidgets('tapping a user mention opens the profile popout', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1280, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final s = _readySession(
+      selectedChannelId: 10,
+      messages: [
+        KurierMessage(
+          id: 50,
+          channelId: 10,
+          createdAt: 0,
+          content:
+              '<p><span data-type="mention" data-mention-kind="user" data-user-id="2">@Gordon</span></p>',
+          userId: 1,
+        ),
+      ],
+    );
+
+    await tester.pumpWidget(_app(s));
+    await tester.pump();
+    await tester.tap(find.textContaining('@Gordon'));
+    await tester.pumpAndSettle();
+
+    expect(s.profileUser?.id, 2);
+    expect(s.profileAnchor, isNotNull);
+    expect(find.byKey(const ValueKey('profile-popout')), findsOneWidget);
   });
 
   test('canModerate requires a higher role and never targets yourself', () {

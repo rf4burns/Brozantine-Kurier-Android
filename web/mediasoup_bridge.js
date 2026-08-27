@@ -168,6 +168,10 @@
     _dummyTracks: {},
     _boundMedia: {},
     _bindTimers: {},
+    _sendConnState: "",
+    _recvConnState: "",
+    _resumeTimer: 0,
+    _resumingPlayback: false,
 
     async _run(work) {
       try {
@@ -195,8 +199,20 @@
 
     _ensureAudioCtx() {
       const Ctx = window.AudioContext || window.webkitAudioContext;
-      if (!this._audioCtx) this._audioCtx = new Ctx();
-      if (this._audioCtx.state === "suspended") {
+      if (!this._audioCtx) {
+        this._audioCtx = new Ctx();
+        this._audioCtx.onstatechange = () => {
+          const ctx = this._audioCtx;
+          if (!ctx) return;
+          if (ctx.state !== "running") {
+            ctx.resume().catch(() => {});
+            return;
+          }
+          this._reattachVoiceGraphs(true);
+          this.resumePlayback();
+        };
+      }
+      if (this._audioCtx.state !== "running") {
         this._audioCtx.resume().catch(() => {});
       }
       this._applyCtxSink();
@@ -211,7 +227,8 @@
 
     _startKeepAlive() {
       const ctx = this._ensureAudioCtx();
-      if (this._keepAlive) return;
+      if (this._keepAlive && this._keepAlive.osc) return;
+      this._stopKeepAlive();
       try {
         const osc = ctx.createOscillator();
         const gain = ctx.createGain();
@@ -219,6 +236,12 @@
         osc.frequency.value = 20;
         osc.connect(gain);
         gain.connect(ctx.destination);
+        osc.onended = () => {
+          if (this._keepAlive && this._keepAlive.osc === osc) {
+            this._keepAlive = null;
+            if (this.sendTransport || this.recvTransport) this._startKeepAlive();
+          }
+        };
         osc.start();
         this._keepAlive = { osc: osc, gain: gain };
       } catch (_) {}
@@ -483,6 +506,7 @@
         }, SIGNAL_TIMEOUT_MS);
       });
       this.sendTransport.on("connectionstatechange", (state) => {
+        this._sendConnState = String(state || "");
         this._emit("sendState", state);
       });
       return this.sendTransport.id;
@@ -503,6 +527,7 @@
       });
       this._armConnect(this.recvTransport, "connectRecv", "_pendingConnectRecv");
       this.recvTransport.on("connectionstatechange", (state) => {
+        this._recvConnState = String(state || "");
         this._emit("recvState", state);
       });
       return this.recvTransport.id;
@@ -531,6 +556,20 @@
       if (!p) return;
       if (producerId) p.callback({ id: producerId });
       else p.errback(new Error("produce failed"));
+    },
+
+    async restartIce(direction, iceParametersJson) {
+      return this._run(async () => {
+        const iceParameters = parseJson(iceParametersJson);
+        const transport =
+          direction === "send" ? this.sendTransport : this.recvTransport;
+        if (!transport) throw new Error("transport missing");
+        if (!iceParameters || !iceParameters.usernameFragment) {
+          throw new Error("Invalid ICE parameters");
+        }
+        await transport.restartIce({ iceParameters });
+        return "";
+      });
     },
 
     _isMobile() {
@@ -1347,6 +1386,7 @@
     },
 
     closeAll() {
+      this._stopResumeLoop();
       this._stopAllMeters();
       Object.keys(this.producers).forEach((k) => this.closeProducer(k));
       Object.keys(this.consumers).forEach((k) => this.closeConsumer(k));
@@ -1367,6 +1407,8 @@
       } catch (_) {}
       this.sendTransport = null;
       this.recvTransport = null;
+      this._sendConnState = "";
+      this._recvConnState = "";
       this.device = null;
       this._pendingConnectSend = null;
       this._pendingConnectRecv = null;
@@ -1406,27 +1448,23 @@
       return this._run(async () => {
       try {
         const ctx = this._ensureAudioCtx();
-        if (ctx.state === "suspended") await ctx.resume();
+        if (ctx.state !== "running") await ctx.resume();
         this._startKeepAlive();
       } catch (_) {}
+      if (global.KurierSounds && global.KurierSounds.unlock) {
+        try {
+          await global.KurierSounds.unlock();
+        } catch (_) {}
+      }
       this.resumePlayback();
       return "";
       });
     },
 
     playPing() {
-      try {
-        const ctx = this._audioCtx || new (window.AudioContext || window.webkitAudioContext)();
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
-        osc.frequency.value = 880;
-        gain.gain.value = 0.08;
-        osc.connect(gain);
-        gain.connect(ctx.destination);
-        osc.start();
-        gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.18);
-        osc.stop(ctx.currentTime + 0.2);
-      } catch (_) {}
+      if (global.KurierSounds && global.KurierSounds.playSound) {
+        global.KurierSounds.playSound("message_received");
+      }
     },
 
     notify(title, body) {
@@ -1455,14 +1493,71 @@
       });
     },
 
-    resumePlayback() {
-      if (this._audioCtx) this._ensureAudioCtx();
-      if (this.sendTransport || this.recvTransport || this._keepAlive) {
-        this._startKeepAlive();
-      }
-      document.querySelectorAll('[id^="kurier-media-"]').forEach((el) => {
-        this._playMedia(el);
+    _reattachVoiceGraphs(force) {
+      Object.keys(this.consumers).forEach((key) => {
+        const c = this.consumers[key];
+        if (!c || !c.track || c.track.kind !== "audio") return;
+        if (!force && this._gains[key]) return;
+        this._attachVoiceGraph(key, new MediaStream([c.track]));
       });
+    },
+
+    _startResumeLoop() {
+      if (this._resumeTimer) return;
+      this._resumeTimer = setInterval(() => {
+        if (!this.sendTransport && !this.recvTransport) {
+          this._stopResumeLoop();
+          return;
+        }
+        this.resumePlayback();
+      }, 5000);
+    },
+
+    _stopResumeLoop() {
+      if (!this._resumeTimer) return;
+      clearInterval(this._resumeTimer);
+      this._resumeTimer = 0;
+    },
+
+    _playbackSnapshot() {
+      const liveAudioKeys = [];
+      const graphKeys = [];
+      Object.keys(this.consumers).forEach((key) => {
+        const c = this.consumers[key];
+        if (!c || !c.track || c.track.kind !== "audio") return;
+        if (c.track.readyState === "live") liveAudioKeys.push(key);
+        if (this._gains[key]) graphKeys.push(key);
+      });
+      return {
+        ctxRunning: !!(this._audioCtx && this._audioCtx.state === "running"),
+        keepAlive: !!(this._keepAlive && this._keepAlive.osc),
+        recvState: this._recvConnState || "",
+        sendState: this._sendConnState || "",
+        liveAudioKeys: liveAudioKeys,
+        graphKeys: graphKeys,
+      };
+    },
+
+    async playbackHealthy() {
+      return this._run(async () => JSON.stringify(this._playbackSnapshot()));
+    },
+
+    resumePlayback() {
+      if (this._resumingPlayback) return;
+      this._resumingPlayback = true;
+      try {
+        if (this._audioCtx) this._ensureAudioCtx();
+        if (this.sendTransport || this.recvTransport || this._keepAlive) {
+          this._startKeepAlive();
+          this._startResumeLoop();
+        }
+        this._reattachVoiceGraphs(false);
+        document.querySelectorAll('[id^="kurier-media-"]').forEach((el) => {
+          this._playMedia(el);
+        });
+      } finally {
+        this._resumingPlayback = false;
+      }
     },
   };
 
@@ -1472,6 +1567,9 @@
     if (document.visibilityState === "visible") {
       KurierMediasoup.resumePlayback();
       KurierMediasoup._emit("visibility", "visible");
+      if (global.KurierSounds && global.KurierSounds.unlock) {
+        global.KurierSounds.unlock();
+      }
     }
   });
 })(window);
