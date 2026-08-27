@@ -55,7 +55,8 @@ class MemberActionPlan {
             !u.deleted &&
             s.canModerate(u) &&
             s.can(Permission.deleteUsers) &&
-            !u.roleIds.contains(AppConfig.ownerRoleId);
+            !u.roleIds.contains(AppConfig.ownerRoleId),
+        showCopy = s.can(Permission.manageUsers);
 
   final bool own;
   final bool deleted;
@@ -71,16 +72,13 @@ class MemberActionPlan {
   final bool showKick;
   final bool showBan;
   final bool showDelete;
+  final bool showCopy;
 
   bool get showManage => showNick || showMove || showRoles || showReset;
   bool get showModeration =>
       showServerMute || showServerDeafen || showKick || showBan || showDelete;
   bool get hasOverflowActions =>
-      dmOk ||
-      showVolume ||
-      showManage ||
-      showModeration ||
-      true; // copy username / id always
+      dmOk || showVolume || showManage || showModeration || showCopy;
 }
 
 Future<void> openMemberPointerMenu(
@@ -417,14 +415,16 @@ Future<void> showMemberOverflowSheet(
                     : l('muteLocally'),
                 onTap: () => session.toggleLocalMute(live.id),
               ),
-            item(
-              label: l('copyUsername'),
-              onTap: () => run((c) => copyMemberText(c, live.name)),
-            ),
-            item(
-              label: l('copyUserId'),
-              onTap: () => run((c) => copyMemberText(c, '${live.id}')),
-            ),
+            if (a.showCopy) ...[
+              item(
+                label: l('copyUsername'),
+                onTap: () => run((c) => copyMemberText(c, live.name)),
+              ),
+              item(
+                label: l('copyUserId'),
+                onTap: () => run((c) => copyMemberText(c, '${live.id}')),
+              ),
+            ],
             if (a.showNick)
               item(
                 label: l('setNickname'),

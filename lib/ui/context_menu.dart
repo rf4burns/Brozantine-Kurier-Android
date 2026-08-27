@@ -3,11 +3,9 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-import '../app/breakpoints.dart';
 import '../app/theme.dart';
 
-const _desktopMenuWidth = 260.0;
-const _menuMaxWidth = 280.0;
+const _menuWidth = 260.0;
 const _menuInset = 8.0;
 
 class MenuAction {
@@ -158,11 +156,8 @@ class _ContextMenuPage extends StatelessWidget {
   Widget build(BuildContext context) {
     final size = MediaQuery.sizeOf(context);
     final pad = MediaQuery.paddingOf(context);
-    final touch = breakpointOf(size.width) != Breakpoint.desktop;
     final availW = size.width - pad.left - pad.right - _menuInset * 2;
-    final width = touch
-        ? math.min(_menuMaxWidth, availW)
-        : math.min(_desktopMenuWidth, availW);
+    final width = math.min(_menuWidth, availW);
 
     var left = anchor.dx;
     if (left + width > size.width - pad.right - _menuInset) {
@@ -203,7 +198,6 @@ class _ContextMenuPage extends StatelessWidget {
               child: _KurierMenuCard(
                 actions: actions,
                 header: header,
-                touch: touch,
               ),
             ),
           ),
@@ -216,12 +210,10 @@ class _ContextMenuPage extends StatelessWidget {
 class _KurierMenuCard extends StatelessWidget {
   const _KurierMenuCard({
     required this.actions,
-    required this.touch,
     this.header,
   });
 
   final List<MenuAction> actions;
-  final bool touch;
   final ContextMenuHeaderBuilder? header;
 
   void _close(BuildContext context) {
@@ -258,7 +250,6 @@ class _KurierMenuCard extends StatelessWidget {
                 ),
               _MenuRow(
                 action: actions[i],
-                touch: touch,
                 onTap: () => _run(context, actions[i]),
               ),
             ],
@@ -272,12 +263,10 @@ class _KurierMenuCard extends StatelessWidget {
 class _MenuRow extends StatefulWidget {
   const _MenuRow({
     required this.action,
-    required this.touch,
     required this.onTap,
   });
 
   final MenuAction action;
-  final bool touch;
   final VoidCallback onTap;
 
   @override
@@ -303,14 +292,9 @@ class _MenuRowState extends State<_MenuRow> {
           onTap: widget.onTap,
           borderRadius: BorderRadius.circular(4),
           child: ConstrainedBox(
-            constraints: BoxConstraints(
-              minHeight: widget.touch ? minTap : 32,
-            ),
+            constraints: const BoxConstraints(minHeight: 32),
             child: Padding(
-              padding: EdgeInsets.symmetric(
-                horizontal: 8,
-                vertical: widget.touch ? 0 : 8,
-              ),
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
               child: Row(
                 children: [
                   if (widget.action.icon != null) ...[

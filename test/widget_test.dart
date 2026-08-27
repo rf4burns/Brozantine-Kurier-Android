@@ -1,3 +1,6 @@
+import 'dart:ui' show PointerDeviceKind;
+
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -12,6 +15,7 @@ import 'package:kurier_web/protocol/permissions.dart';
 import 'package:kurier_web/protocol/voice_stats.dart';
 import 'package:kurier_web/session/hosts_store.dart';
 import 'package:kurier_web/session/session_controller.dart';
+import 'package:kurier_web/ui/attachment_media.dart';
 import 'package:kurier_web/ui/home_shell.dart';
 import 'package:kurier_web/ui/member_list.dart';
 import 'package:kurier_web/ui/message_embeds.dart';
@@ -97,6 +101,26 @@ Widget _app(SessionController session) {
   );
 }
 
+KurierFile _mediaFile({
+  int id = 42,
+  String name = 'clip.mp4',
+  String originalName = 'SNEEDING_HAS_STARTED_1.mp4',
+  String mimeType = 'video/mp4',
+  String extension = 'mp4',
+}) {
+  return KurierFile(
+    id: id,
+    name: name,
+    originalName: originalName,
+    md5: '',
+    userId: 1,
+    size: 1,
+    mimeType: mimeType,
+    extension: extension,
+    createdAt: 0,
+  );
+}
+
 void main() {
   setUp(() {
     youtubeOEmbedLookup = (_) async => null;
@@ -170,6 +194,42 @@ void main() {
       tester.widget<MaterialApp>(find.byType(MaterialApp)).title,
       'Test Server - Kurier',
     );
+  });
+
+  testWidgets('phone swipe right from DMs returns to last text channel', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final s = _readySession(selectedChannelId: 10);
+    await s.selectChannel(10);
+
+    await tester.pumpWidget(_app(s));
+    await tester.pump();
+    expect(find.text('hello overlay'), findsOneWidget);
+
+    await tester.tap(find.byIcon(Icons.menu));
+    await tester.pump();
+    expect(find.text('Direct Messages'), findsNothing);
+
+    await tester.tap(find.byIcon(Icons.forum));
+    await tester.pump();
+    expect(find.text('Direct Messages'), findsOneWidget);
+    expect(find.text('hello overlay'), findsNothing);
+
+    await tester.fling(
+      find.text('Direct Messages'),
+      const Offset(300, 0),
+      800,
+    );
+    await tester.pumpAndSettle();
+    expect(s.showingDms, isFalse);
+    expect(s.selectedChannelId, 10);
+    expect(find.text('hello overlay'), findsOneWidget);
+    expect(find.text('Direct Messages'), findsNothing);
   });
 
   testWidgets('desktop chat shows message and member list', (tester) async {
@@ -857,6 +917,109 @@ void main() {
     expect(find.text('2:05'), findsOneWidget);
     expect(find.text('1:55'), findsOneWidget);
     expect(find.byIcon(Icons.mic_off), findsWidgets);
+  });
+
+  testWidgets('voice channel status sits under the name above occupants', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1280, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final s = _readySession(selectedChannelId: 20);
+    s.channels[20] = KurierChannel(
+      id: 20,
+      type: 'VOICE',
+      name: 'public!!',
+      position: 1,
+      topic: 'Playing games',
+    );
+    s.voiceMap[20] = {2: VoiceUserState(micMuted: true)};
+
+    await tester.pumpWidget(_app(s));
+    await tester.pump();
+
+    expect(
+      find.descendant(
+        of: find.byType(ChannelSidebar),
+        matching: find.text('Playing games'),
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(
+        of: find.byType(VoiceStage),
+        matching: find.text('Playing games'),
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(
+        of: find.byType(VoiceStatusText),
+        matching: find.byType(UserAvatar),
+      ),
+      findsNothing,
+    );
+
+    final channel = tester.getRect(
+      find.descendant(
+        of: find.byType(ChannelSidebar),
+        matching: find.text('public!!'),
+      ),
+    );
+    final status = tester.getRect(
+      find.descendant(
+        of: find.byType(ChannelSidebar),
+        matching: find.text('Playing games'),
+      ),
+    );
+    final occupant = tester.getRect(
+      find.descendant(
+        of: find.byType(ChannelSidebar),
+        matching: find.text('Gordon'),
+      ),
+    );
+    expect(status.top, greaterThan(channel.top));
+    expect(occupant.top, greaterThan(status.bottom));
+  });
+
+  testWidgets('phone shows voice channel status in the sidebar and stage', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final s = _readySession();
+    s.channels[20] = KurierChannel(
+      id: 20,
+      type: 'VOICE',
+      name: 'public!!',
+      position: 1,
+      topic: 'Playing games',
+    );
+    s.voiceMap[20] = {2: VoiceUserState()};
+
+    await tester.pumpWidget(_app(s));
+    await tester.pump();
+
+    expect(find.byType(ChannelSidebar), findsOneWidget);
+    expect(find.text('Playing games'), findsOneWidget);
+    expect(find.byType(VoiceStage), findsNothing);
+
+    await tester.tap(find.text('public!!'));
+    await tester.pump();
+
+    expect(find.byType(VoiceStage), findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.byType(VoiceStage),
+        matching: find.text('Playing games'),
+      ),
+      findsOneWidget,
+    );
   });
 
   testWidgets('channel bar rows match vanilla spacing', (tester) async {
@@ -1572,6 +1735,140 @@ void main() {
 
     expect(find.text('No favourite GIFs yet'), findsNothing);
     expect(find.byIcon(Icons.star), findsWidgets);
+  });
+
+  testWidgets('uploaded mp4 embeds as a playable video', (tester) async {
+    tester.view.physicalSize = const Size(1280, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(
+      _app(
+        _readySession(
+          selectedChannelId: 10,
+          messages: [
+            KurierMessage(
+              id: 1,
+              channelId: 10,
+              createdAt: 0,
+              content: '<p></p>',
+              userId: 1,
+              files: [_mediaFile()],
+            ),
+          ],
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.byKey(videoAttachmentKey('42')), findsOneWidget);
+    expect(find.text('SNEEDING_HAS_STARTED_1.mp4'), findsNothing);
+  });
+
+  testWidgets('uploaded mp4 embeds on the phone overlay', (tester) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(
+      _app(
+        _readySession(
+          selectedChannelId: 10,
+          messages: [
+            KurierMessage(
+              id: 1,
+              channelId: 10,
+              createdAt: 0,
+              content:
+                  '<p><a href="https://host/public/clip.mp4">SNEEDING_HAS_STARTED_1.mp4</a></p>',
+              userId: 1,
+              files: [_mediaFile()],
+            ),
+          ],
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.byKey(videoAttachmentKey('42')), findsOneWidget);
+    expect(find.text('SNEEDING_HAS_STARTED_1.mp4'), findsNothing);
+    final box = tester.getRect(find.byKey(videoAttachmentKey('42')));
+    expect(box.width, lessThanOrEqualTo(kAttachmentMediaMaxWidth));
+    expect(box.width, greaterThan(100));
+  });
+
+  testWidgets('uploaded mp3 embeds as a playable audio player', (tester) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(
+      _app(
+        _readySession(
+          selectedChannelId: 10,
+          messages: [
+            KurierMessage(
+              id: 1,
+              channelId: 10,
+              createdAt: 0,
+              content: '<p></p>',
+              userId: 1,
+              files: [
+                _mediaFile(
+                  id: 7,
+                  name: 'track.mp3',
+                  originalName: 'theme.mp3',
+                  mimeType: 'audio/mpeg',
+                  extension: 'mp3',
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.byKey(audioAttachmentKey('7')), findsOneWidget);
+    expect(find.text('theme.mp3'), findsOneWidget);
+    expect(find.byType(ListTile), findsNothing);
+  });
+
+  testWidgets('metadata video embeds when not already an attachment', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1280, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    const url = 'https://cdn.example/clip.webm';
+    await tester.pumpWidget(
+      _app(
+        _readySession(
+          selectedChannelId: 10,
+          messages: [
+            KurierMessage(
+              id: 1,
+              channelId: 10,
+              createdAt: 0,
+              content: '<p>$url</p>',
+              userId: 1,
+              metadata: [
+                {'kind': 'media', 'url': url, 'mediaType': 'video/webm'},
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.byKey(videoAttachmentKey(url)), findsOneWidget);
+    expect(find.text(url), findsNothing);
   });
 
   test('member list skips owner role and uses the next rank', () {
@@ -2707,7 +3004,8 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('profile-overflow')));
     await tester.pumpAndSettle();
 
-    expect(find.text('Copy username'), findsOneWidget);
+    expect(find.text('Copy username'), findsNothing);
+    expect(find.text('Copy user ID'), findsNothing);
     expect(find.text('Mute locally'), findsOneWidget);
     expect(find.text('Close'), findsOneWidget);
     expect(find.text('Kick from server'), findsNothing);
@@ -3061,7 +3359,9 @@ void main() {
     expect(find.byKey(const ValueKey('menu-react-+1')), findsOneWidget);
   });
 
-  testWidgets('phone message context menu is a compact card', (tester) async {
+  testWidgets('phone message context menu matches desktop grouping', (
+    tester,
+  ) async {
     tester.view.physicalSize = const Size(390, 844);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
@@ -3074,10 +3374,165 @@ void main() {
     await tester.longPress(find.text('hello overlay'));
     await tester.pumpAndSettle();
 
+    expect(find.byKey(const ValueKey('menu-react-+1')), findsOneWidget);
     expect(find.text('Add reaction'), findsOneWidget);
+    expect(find.text('Edit'), findsOneWidget);
     expect(find.text('Reply'), findsOneWidget);
+    expect(find.text('Reply in thread'), findsOneWidget);
+    expect(find.text('Pin message'), findsOneWidget);
+    expect(find.text('Copy text'), findsOneWidget);
     expect(find.text('Delete message'), findsOneWidget);
     expect(find.text('Close'), findsNothing);
+    expect(find.byIcon(Icons.chevron_right), findsOneWidget);
+    expect(
+      tester
+          .getSize(
+            find
+                .ancestor(
+                  of: find.text('Add reaction'),
+                  matching: find.byType(InkWell),
+                )
+                .first,
+          )
+          .height,
+      lessThan(40),
+    );
+  });
+
+  testWidgets('tablet message context menu matches desktop grouping', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(900, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final s = _readySession(selectedChannelId: 10);
+    _grantOwner(s);
+    await tester.pumpWidget(_app(s));
+    await tester.pump();
+    await tester.longPress(find.text('hello overlay'));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const ValueKey('menu-react-+1')), findsOneWidget);
+    expect(find.text('Add reaction'), findsOneWidget);
+    expect(find.text('Edit'), findsOneWidget);
+    expect(find.text('Reply'), findsOneWidget);
+    expect(find.text('Reply in thread'), findsOneWidget);
+    expect(find.text('Pin message'), findsOneWidget);
+    expect(find.text('Copy text'), findsOneWidget);
+    expect(find.text('Delete message'), findsOneWidget);
+    expect(find.text('Close'), findsNothing);
+    expect(find.byIcon(Icons.chevron_right), findsOneWidget);
+    expect(
+      tester
+          .getSize(
+            find
+                .ancestor(
+                  of: find.text('Add reaction'),
+                  matching: find.byType(InkWell),
+                )
+                .first,
+          )
+          .height,
+      lessThan(40),
+    );
+  });
+
+  testWidgets('desktop message hover bar shows actions then more menu', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1280, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final s = _readySession(selectedChannelId: 10);
+    _grantOwner(s);
+    await tester.pumpWidget(_app(s));
+    await tester.pump();
+
+    expect(find.byKey(const ValueKey('hover-more')), findsNothing);
+
+    final gesture = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    await gesture.addPointer(location: Offset.zero);
+    addTearDown(gesture.removePointer);
+    await gesture.moveTo(tester.getCenter(find.text('hello overlay')));
+    await tester.pump();
+
+    expect(find.byKey(const ValueKey('hover-add-reaction')), findsOneWidget);
+    expect(find.byKey(const ValueKey('hover-edit')), findsOneWidget);
+    expect(find.byKey(const ValueKey('hover-pin')), findsOneWidget);
+    expect(find.byKey(const ValueKey('hover-reply')), findsOneWidget);
+    expect(find.byKey(const ValueKey('hover-copy')), findsOneWidget);
+    expect(find.byKey(const ValueKey('hover-more')), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('hover-more')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Copy text'), findsOneWidget);
+    expect(find.text('Reply in thread'), findsOneWidget);
+    expect(find.text('Delete message'), findsOneWidget);
+  });
+
+  testWidgets('message hover bar hides unpermitted actions', (tester) async {
+    tester.view.physicalSize = const Size(1280, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(_app(_readySession(selectedChannelId: 10)));
+    await tester.pump();
+
+    final gesture = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    await gesture.addPointer(location: Offset.zero);
+    addTearDown(gesture.removePointer);
+    await gesture.moveTo(tester.getCenter(find.text('hello overlay')));
+    await tester.pump();
+
+    expect(find.byKey(const ValueKey('hover-add-reaction')), findsNothing);
+    expect(find.byKey(const ValueKey('hover-pin')), findsNothing);
+    expect(find.byKey(const ValueKey('hover-reply')), findsNothing);
+    expect(find.byKey(const ValueKey('hover-edit')), findsOneWidget);
+    expect(find.byKey(const ValueKey('hover-copy')), findsOneWidget);
+    expect(find.byKey(const ValueKey('hover-more')), findsOneWidget);
+  });
+
+  testWidgets('message hover bar omits unavailable actions on others', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1280, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final s = _readySession(
+      selectedChannelId: 10,
+      messages: [
+        KurierMessage(
+          id: 1,
+          channelId: 10,
+          createdAt: 0,
+          content: '<p>hello overlay</p>',
+          userId: 2,
+        ),
+      ],
+    );
+    await tester.pumpWidget(_app(s));
+    await tester.pump();
+
+    final gesture = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    await gesture.addPointer(location: Offset.zero);
+    addTearDown(gesture.removePointer);
+    await gesture.moveTo(tester.getCenter(find.text('hello overlay')));
+    await tester.pump();
+
+    expect(find.byKey(const ValueKey('hover-add-reaction')), findsNothing);
+    expect(find.byKey(const ValueKey('hover-edit')), findsNothing);
+    expect(find.byKey(const ValueKey('hover-pin')), findsNothing);
+    expect(find.byKey(const ValueKey('hover-reply')), findsNothing);
+    expect(find.byKey(const ValueKey('hover-more')), findsNothing);
+    expect(find.byKey(const ValueKey('hover-copy')), findsOneWidget);
   });
 
   testWidgets('channel context menu hides unpermitted manage actions', (

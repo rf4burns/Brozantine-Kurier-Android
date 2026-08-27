@@ -24,14 +24,6 @@ class ProfileCard extends StatelessWidget {
   }
 }
 
-Color profileBannerColor(String hex) {
-  try {
-    return Color(int.parse(hex.replaceFirst('#', 'FF'), radix: 16));
-  } catch (_) {
-    return const Color(0xFF262626);
-  }
-}
-
 String formatMemberSince(int ms) {
   if (ms <= 0) return '';
   final d = DateTime.fromMillisecondsSinceEpoch(ms);
@@ -211,6 +203,7 @@ class _DesktopPopoutBody extends StatelessWidget {
         ? (s.voiceMap[voiceId] ?? const <int, VoiceUserState>{})
         : const <int, VoiceUserState>{};
     final badge = _avatar + _ring * 2;
+    final bannerUrl = live.banner != null ? s.fileUrl(live.banner!) : '';
 
     return SingleChildScrollView(
       child: Column(
@@ -229,11 +222,12 @@ class _DesktopPopoutBody extends StatelessWidget {
                   height: _bannerH,
                   child: ColoredBox(
                     color: profileBannerColor(live.profileColor),
-                    child: live.banner != null
+                    child: bannerUrl.isNotEmpty
                         ? Image.network(
-                            s.fileUrl(live.banner!),
+                            bannerUrl,
                             fit: BoxFit.cover,
                             width: double.infinity,
+                            gaplessPlayback: true,
                             errorBuilder: (_, _, _) => const SizedBox.expand(),
                           )
                         : null,
@@ -480,6 +474,7 @@ class _MobileProfileBody extends StatelessWidget {
                     child: _Header(
                       session: s,
                       user: live,
+                      showOverflow: a.hasOverflowActions,
                       onOverflow: () =>
                           showMemberOverflowSheet(context, s, live),
                     ),
@@ -626,11 +621,13 @@ class _Header extends StatelessWidget {
   const _Header({
     required this.session,
     required this.user,
+    required this.showOverflow,
     required this.onOverflow,
   });
 
   final SessionController session;
   final KurierUser user;
+  final bool showOverflow;
   final VoidCallback onOverflow;
 
   @override
@@ -640,6 +637,7 @@ class _Header extends StatelessWidget {
     const bannerH = 140.0;
     const avatar = 80.0;
     const overlap = 28.0;
+    final bannerUrl = user.banner != null ? s.fileUrl(user.banner!) : '';
     return SizedBox(
       height: bannerH + avatar - overlap + 12,
       child: Stack(
@@ -652,11 +650,12 @@ class _Header extends StatelessWidget {
             height: bannerH,
             child: ColoredBox(
               color: profileBannerColor(user.profileColor),
-              child: user.banner != null
+              child: bannerUrl.isNotEmpty
                   ? Image.network(
-                      s.fileUrl(user.banner!),
+                      bannerUrl,
                       fit: BoxFit.cover,
                       width: double.infinity,
+                      gaplessPlayback: true,
                       errorBuilder: (_, _, _) => const SizedBox.expand(),
                     )
                   : null,
@@ -677,20 +676,21 @@ class _Header extends StatelessWidget {
               ),
             ),
           ),
-          Positioned(
-            top: 8,
-            right: 8,
-            child: Material(
-              color: Colors.black45,
-              shape: const CircleBorder(),
-              child: IconButton(
-                key: const ValueKey('profile-overflow'),
-                tooltip: L10n.of(context)('others'),
-                onPressed: onOverflow,
-                icon: const Icon(Icons.more_horiz, color: Colors.white),
+          if (showOverflow)
+            Positioned(
+              top: 8,
+              right: 8,
+              child: Material(
+                color: Colors.black45,
+                shape: const CircleBorder(),
+                child: IconButton(
+                  key: const ValueKey('profile-overflow'),
+                  tooltip: L10n.of(context)('others'),
+                  onPressed: onOverflow,
+                  icon: const Icon(Icons.more_horiz, color: Colors.white),
+                ),
               ),
             ),
-          ),
           Positioned(
             left: 16,
             top: bannerH - overlap,
@@ -795,6 +795,8 @@ class _VoiceCard extends StatelessWidget {
                         ),
                       ],
                     ),
+                    if (channel.displayedVoiceStatus != null)
+                      VoiceStatusText(channel.displayedVoiceStatus!),
                     Text(
                       l('inServer', {'name': s.serverName}),
                       overflow: TextOverflow.ellipsis,

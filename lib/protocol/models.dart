@@ -15,6 +15,12 @@ bool asBool(dynamic v, [bool fallback = false]) {
   return fallback;
 }
 
+String? asOptionalString(dynamic v) {
+  if (v == null) return null;
+  final s = '$v'.trim();
+  return s.isEmpty ? null : s;
+}
+
 /// Accepts `roleIds: [1, 2]` or `roles: [{id: 1}, 2]`.
 List<int> parseRoleIds(Map<String, dynamic> json) {
   final raw = json['roleIds'] ?? json['roles'];
@@ -78,25 +84,127 @@ class KurierFile {
   final int? accessTokenExpiresAt;
 
   factory KurierFile.fromJson(Map<String, dynamic> json) {
+    var map = json;
+    final nested = json['json'];
+    if (nested is Map && json.containsKey('meta')) {
+      map = Map<String, dynamic>.from(nested);
+    }
     return KurierFile(
-      id: asInt(json['id']) ?? 0,
-      name: '${json['name'] ?? ''}',
-      originalName: '${json['originalName'] ?? ''}',
-      md5: '${json['md5'] ?? ''}',
-      userId: asInt(json['userId']) ?? 0,
-      size: asInt(json['size']) ?? 0,
-      mimeType: '${json['mimeType'] ?? ''}',
-      extension: '${json['extension'] ?? ''}',
-      createdAt: asInt(json['createdAt']) ?? 0,
-      accessToken: json['_accessToken'] as String?,
-      accessTokenExpiresAt: asInt(json['_accessTokenExpiresAt']),
+      id: asInt(map['id']) ?? 0,
+      name: '${map['name'] ?? map['url'] ?? ''}',
+      originalName: '${map['originalName'] ?? ''}',
+      md5: '${map['md5'] ?? ''}',
+      userId: asInt(map['userId']) ?? 0,
+      size: asInt(map['size']) ?? 0,
+      mimeType: '${map['mimeType'] ?? ''}',
+      extension: '${map['extension'] ?? ''}',
+      createdAt: asInt(map['createdAt']) ?? 0,
+      accessToken: _fileToken(map),
+      accessTokenExpiresAt:
+          asInt(map['_accessTokenExpiresAt']) ?? asInt(map['accessTokenExpiresAt']),
     );
   }
 
   bool get isImage => mimeType.startsWith('image/');
-  bool get isVideo => mimeType.startsWith('video/');
-  bool get isAudio => mimeType.startsWith('audio/');
+  bool get isVideo =>
+      mimeType.startsWith('video/') ||
+      videoFileExtensions.contains(resolvedExtension);
+  bool get isAudio =>
+      mimeType.startsWith('audio/') ||
+      audioFileExtensions.contains(resolvedExtension);
   bool get isPdf => mimeType == 'application/pdf' || extension == 'pdf';
+
+  /// MIME `extension`, else the suffix of `originalName` / `name`.
+  String get resolvedExtension {
+    final fromField = normalizeFileExtension(extension);
+    if (fromField.isNotEmpty) return fromField;
+    final fromOrig = extensionFromFileName(originalName);
+    if (fromOrig.isNotEmpty) return fromOrig;
+    return extensionFromFileName(name);
+  }
+}
+
+const videoFileExtensions = {'mp4', 'webm', 'mov', 'm4v', 'ogv', 'mkv'};
+const audioFileExtensions = {
+  'mp3',
+  'wav',
+  'ogg',
+  'oga',
+  'm4a',
+  'aac',
+  'flac',
+  'opus',
+};
+
+String normalizeFileExtension(String raw) {
+  var value = raw.trim().toLowerCase();
+  if (value.startsWith('.')) value = value.substring(1);
+  return value;
+}
+
+String extensionFromFileName(String name) {
+  final trimmed = name.trim();
+  if (trimmed.isEmpty) return '';
+  var path = trimmed;
+  final query = path.indexOf('?');
+  if (query >= 0) path = path.substring(0, query);
+  final slash = path.lastIndexOf('/');
+  if (slash >= 0) path = path.substring(slash + 1);
+  final dot = path.lastIndexOf('.');
+  if (dot <= 0 || dot == path.length - 1) return '';
+  return normalizeFileExtension(path.substring(dot + 1));
+}
+
+String? _fileToken(Map<String, dynamic> json) {
+  final v = json['_accessToken'] ?? json['accessToken'];
+  if (v == null) return null;
+  final s = '$v'.trim();
+  return s.isEmpty ? null : s;
+}
+
+/// Avatar/banner may be a TFile map, a filename, or a `/public/...` path.
+KurierFile? fileFromDynamic(dynamic value) {
+  if (value == null) return null;
+  if (value is String) {
+    final raw = value.trim();
+    if (raw.isEmpty) return null;
+    var name = raw;
+    if (raw.startsWith('http://') || raw.startsWith('https://')) {
+      name = Uri.tryParse(raw)?.pathSegments.lastOrNull ?? raw;
+    } else if (raw.startsWith('/')) {
+      name = raw.split('/').where((p) => p.isNotEmpty).lastOrNull ?? raw;
+    }
+    if (name.isEmpty) return null;
+    return KurierFile(
+      id: 0,
+      name: name,
+      originalName: name,
+      md5: '',
+      userId: 0,
+      size: 0,
+      mimeType: '',
+      extension: '',
+      createdAt: 0,
+    );
+  }
+  if (value is! Map) return null;
+  final file = KurierFile.fromJson(Map<String, dynamic>.from(value));
+  return file.name.trim().isEmpty ? null : file;
+}
+
+/// Keep a still-signed file when an update repeats the same id without tokens.
+KurierFile? preferSignedFile(KurierFile? incoming, KurierFile? existing) {
+  if (incoming == null) return null;
+  if (existing == null) return incoming;
+  final incomingTok = incoming.accessToken?.trim() ?? '';
+  final existingTok = existing.accessToken?.trim() ?? '';
+  if (incoming.id != 0 &&
+      incoming.id == existing.id &&
+      incomingTok.isEmpty &&
+      existingTok.isNotEmpty) {
+    return existing;
+  }
+  return incoming;
 }
 
 class KurierUser {
@@ -165,46 +273,87 @@ class KurierUser {
   bool get isOnline =>
       status == 'online' || status == 'idle' || status == 'dnd';
 
-  factory KurierUser.fromJson(Map<String, dynamic> json) {
-    final name = '${json['name'] ?? ''}';
-    final identity = json['identity'] as String?;
+  factory KurierUser.fromJson(
+    Map<String, dynamic> json, {
+    KurierUser? existing,
+  }) {
+    final name = json.containsKey('name')
+        ? '${json['name'] ?? ''}'
+        : (existing?.name ?? '');
+    final identity = json.containsKey('identity')
+        ? json['identity'] as String?
+        : existing?.identity;
+    final parsedAvatar = json.containsKey('avatar')
+        ? fileFromDynamic(json['avatar'])
+        : existing?.avatar;
+    final parsedBanner = json.containsKey('banner')
+        ? fileFromDynamic(json['banner'])
+        : existing?.banner;
+    var roleIds = parseRoleIds(json);
+    if (roleIds.isEmpty &&
+        existing != null &&
+        existing.roleIds.isNotEmpty &&
+        !json.containsKey('roleIds') &&
+        !json.containsKey('roles')) {
+      roleIds = List<int>.from(existing.roleIds);
+    }
     return KurierUser(
-      id: asInt(json['id']) ?? 0,
+      id: asInt(json['id']) ?? existing?.id ?? 0,
       name: name,
       identity: identity,
-      nickname: json['nickname'] as String?,
-      pronouns: json['pronouns'] as String?,
-      statusMessage: json['statusMessage'] as String?,
-      bio: json['bio'] as String?,
-      profileColor: '${json['profileColor'] ?? '#262626'}',
-      avatarId: asInt(json['avatarId']),
-      bannerId: asInt(json['bannerId']),
-      avatar: json['avatar'] is Map
-          ? KurierFile.fromJson(
-              Map<String, dynamic>.from(json['avatar'] as Map),
-            )
-          : null,
-      banner: json['banner'] is Map
-          ? KurierFile.fromJson(
-              Map<String, dynamic>.from(json['banner'] as Map),
-            )
-          : null,
-      roleIds: parseRoleIds(json),
-      status: '${json['status'] ?? 'offline'}',
-      banned: asBool(json['banned']),
+      nickname: json.containsKey('nickname')
+          ? json['nickname'] as String?
+          : existing?.nickname,
+      pronouns: json.containsKey('pronouns')
+          ? json['pronouns'] as String?
+          : existing?.pronouns,
+      statusMessage: json.containsKey('statusMessage')
+          ? json['statusMessage'] as String?
+          : existing?.statusMessage,
+      bio: json.containsKey('bio') ? json['bio'] as String? : existing?.bio,
+      profileColor: json.containsKey('profileColor')
+          ? '${json['profileColor'] ?? '#262626'}'
+          : (existing?.profileColor ?? '#262626'),
+      avatarId: json.containsKey('avatarId')
+          ? asInt(json['avatarId'])
+          : existing?.avatarId,
+      bannerId: json.containsKey('bannerId')
+          ? asInt(json['bannerId'])
+          : existing?.bannerId,
+      avatar: preferSignedFile(parsedAvatar, existing?.avatar),
+      banner: preferSignedFile(parsedBanner, existing?.banner),
+      roleIds: roleIds,
+      status: json.containsKey('status')
+          ? '${json['status'] ?? 'offline'}'
+          : (existing?.status ?? 'offline'),
+      banned: json.containsKey('banned')
+          ? asBool(json['banned'])
+          : (existing?.banned ?? false),
       deleted:
           asBool(json['deleted']) ||
           name == AppConfig.deletedUserName ||
           identity == AppConfig.deletedUserName,
-      serverMuted: asBool(json['serverMuted']),
-      serverDeafened: asBool(json['serverDeafened']),
-      createdAt: asInt(json['createdAt']) ?? 0,
-      lastLoginAt: asInt(json['lastLoginAt']) ?? 0,
-      banReason: json['banReason'] as String?,
-      bannedAt: asInt(json['bannedAt']),
+      serverMuted: json.containsKey('serverMuted')
+          ? asBool(json['serverMuted'])
+          : (existing?.serverMuted ?? false),
+      serverDeafened: json.containsKey('serverDeafened')
+          ? asBool(json['serverDeafened'])
+          : (existing?.serverDeafened ?? false),
+      createdAt: json.containsKey('createdAt')
+          ? asInt(json['createdAt']) ?? 0
+          : (existing?.createdAt ?? 0),
+      lastLoginAt: json.containsKey('lastLoginAt')
+          ? asInt(json['lastLoginAt']) ?? 0
+          : (existing?.lastLoginAt ?? 0),
+      banReason: json.containsKey('banReason')
+          ? json['banReason'] as String?
+          : existing?.banReason,
+      bannedAt: json.containsKey('bannedAt')
+          ? asInt(json['bannedAt'])
+          : existing?.bannedAt,
       preferences: json['preferences'] is Map
           ? Map<String, dynamic>.from(json['preferences'] as Map)
-          : const {},
+          : (existing?.preferences ?? const {}),
     );
   }
 
@@ -402,17 +551,27 @@ class KurierChannel {
   bool get isText => type == 'TEXT';
   bool get isVoice => type == 'VOICE';
 
+  /// Voice-channel status line. Server stores this as `topic`.
+  String? get displayedVoiceStatus {
+    if (!isVoice) return null;
+    return asOptionalString(voiceStatus) ?? asOptionalString(topic);
+  }
+
   factory KurierChannel.fromJson(Map<String, dynamic> json) {
+    final topic = asOptionalString(json['topic']);
     return KurierChannel(
       id: asInt(json['id']) ?? 0,
       type: '${json['type'] ?? 'TEXT'}',
       name: '${json['name'] ?? ''}',
-      topic: json['topic'] as String?,
+      topic: topic,
       private: asBool(json['private']),
       isDm: asBool(json['isDm']),
       position: asInt(json['position']) ?? 0,
       categoryId: asInt(json['categoryId']),
-      voiceStatus: json['voiceStatus'] as String? ?? json['status'] as String?,
+      voiceStatus:
+          asOptionalString(json['voiceStatus']) ??
+          asOptionalString(json['status']) ??
+          topic,
     );
   }
 }

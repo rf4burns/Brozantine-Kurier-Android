@@ -79,6 +79,8 @@ class ChannelPermission {
   static const webcam = 'WEBCAM';
 }
 
+const missingPermissionKey = 'missingPermission';
+
 class StreamKind {
   static const audio = 'audio';
   static const video = 'video';
@@ -90,10 +92,8 @@ class StreamKind {
   static bool isPlaybackStream(String kind) =>
       kind == screenAudio || kind == externalAudio;
 
-  /// Music-bot / plugin audio stays muted until the user unmutes.
-  /// Screen-share audio is muted only until Watch Stream.
-  static bool startsClientMuted(String kind, {required bool watching}) =>
-      kind == externalAudio || (isPlaybackStream(kind) && !watching);
+  /// Screen-share and music-bot / plugin audio stay muted until the user unmutes.
+  static bool startsClientMuted(String kind) => isPlaybackStream(kind);
 
   static bool shouldAutoConsume(String kind) => kind == audio || kind == video;
 

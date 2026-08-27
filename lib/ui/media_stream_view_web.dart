@@ -22,7 +22,8 @@ Widget mediaStreamView({required String mediaKey, BoxFit fit = BoxFit.cover}) {
       el.style.setProperty('background', '#000');
       el.style.setProperty('pointer-events', 'none');
       el.style.setProperty('border', '0');
-      el.style.setProperty('border-radius', 'inherit');
+      el.style.setProperty('border-radius', '12px');
+      el.style.setProperty('overflow', 'hidden');
       PlatformBridge.bindMediaElement(mediaKey, el as JSAny);
     },
   );

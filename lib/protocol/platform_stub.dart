@@ -52,7 +52,8 @@ class PlatformBridge {
   static void setOutputDevice(String? deviceId) {}
   static void setCameraDevice(String? deviceId) {}
   static Future<void> getDisplayMedia({bool withAudio = false}) async {}
-  static Future<String> produce(String kind) async => '';
+  static Future<String> produce(String kind, {bool simulcast = false}) async =>
+      '';
   static Future<String> consume(Map<String, dynamic> info) async => '';
   static void closeProducer(String kind) {}
   static void pauseMic(bool paused) {}

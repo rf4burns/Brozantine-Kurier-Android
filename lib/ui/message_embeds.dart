@@ -8,6 +8,7 @@ import '../app/theme.dart';
 import '../protocol/mentions.dart';
 import '../protocol/models.dart';
 import '../session/session_controller.dart';
+import 'attachment_media.dart';
 import 'gif_favourite_star.dart';
 import 'youtube_iframe_stub.dart'
     if (dart.library.js_interop) 'youtube_iframe_web.dart';
@@ -95,6 +96,36 @@ String? ogAuthor(Map<String, dynamic>? data) {
 bool isImageMediaType(String? type) {
   if (type == null || type.isEmpty) return false;
   return type == 'image' || type.startsWith('image/');
+}
+
+bool isVideoMediaType(String? type) {
+  if (type == null || type.isEmpty) return false;
+  return type == 'video' || type.startsWith('video/');
+}
+
+bool isAudioMediaType(String? type) {
+  if (type == null || type.isEmpty) return false;
+  return type == 'audio' || type.startsWith('audio/');
+}
+
+bool isVideoFileUrl(String url) {
+  final ext = extensionFromFileName(_urlPath(url));
+  return videoFileExtensions.contains(ext);
+}
+
+bool isAudioFileUrl(String url) {
+  final ext = extensionFromFileName(_urlPath(url));
+  return audioFileExtensions.contains(ext);
+}
+
+String _urlPath(String raw) {
+  final cleaned = _cleanUrl(raw);
+  if (cleaned.isEmpty) return '';
+  final uri = Uri.tryParse(
+    cleaned.contains('://') ? cleaned : 'https://$cleaned',
+  );
+  if (uri != null && uri.path.isNotEmpty) return uri.path;
+  return cleaned;
 }
 
 List<String> ogImageUrls(dynamic images) {
@@ -284,6 +315,67 @@ String hideGifUrlsInHtml(String html) {
   });
 }
 
+final _anchorTagPattern = RegExp(
+  r'''<a\b[^>]*\bhref\s*=\s*["']([^"']+)["'][^>]*>[\s\S]*?</a>''',
+  caseSensitive: false,
+);
+
+/// Drops attachment / metadata video+audio URLs (and wrapping `<a>` tags)
+/// so the player is the only surface, matching [hideGifUrlsInHtml].
+String hideEmbeddedMediaUrlsInHtml(
+  String html,
+  List<KurierFile> files, [
+  List<dynamic> metadata = const [],
+]) {
+  if (html.isEmpty) return html;
+  final tokens = <String>{};
+  for (final f in files) {
+    if (!f.isVideo && !f.isAudio) continue;
+    for (final value in [f.name, f.originalName]) {
+      final t = value.trim().toLowerCase();
+      if (t.isNotEmpty) tokens.add(t);
+    }
+  }
+  for (final meta in metadata) {
+    if (meta is! Map) continue;
+    if (meta['kind'] != 'media') continue;
+    final url = meta['url'];
+    if (url is! String || url.isEmpty) continue;
+    final type = '${meta['mediaType']}';
+    if (isVideoMediaType(type) ||
+        isAudioMediaType(type) ||
+        isVideoFileUrl(url) ||
+        isAudioFileUrl(url)) {
+      tokens.add(url.trim().toLowerCase());
+      final path = _urlPath(url).toLowerCase();
+      if (path.isNotEmpty) tokens.add(path);
+      final leafParts = path.split('/').where((p) => p.isNotEmpty);
+      if (leafParts.isNotEmpty) tokens.add(leafParts.last);
+    }
+  }
+  if (tokens.isEmpty) return html;
+
+  bool matches(String raw) {
+    final lower = raw.trim().toLowerCase();
+    if (lower.isEmpty) return false;
+    for (final token in tokens) {
+      if (lower.contains(token)) return true;
+    }
+    return false;
+  }
+
+  var out = html.replaceAllMapped(_anchorTagPattern, (match) {
+    final href = match.group(1) ?? '';
+    final full = match.group(0) ?? '';
+    return matches(href) || matches(full) ? '' : full;
+  });
+  out = out.replaceAllMapped(_urlPattern, (match) {
+    final raw = match.group(0)!;
+    return matches(raw) ? '' : raw;
+  });
+  return out;
+}
+
 bool messageHtmlHasVisibleText(String html) {
   return htmlToPlainText(html).isNotEmpty;
 }
@@ -322,6 +414,25 @@ class MessageEmbeds extends StatelessWidget {
     final children = <Widget>[];
     final emittedYoutube = <String>{};
     final emittedGifs = <String>{};
+    final emittedMedia = <String>{};
+
+    bool alreadyAttached(String url) {
+      for (final f in message.files) {
+        if (!f.isVideo && !f.isAudio) continue;
+        final name = f.name.trim();
+        final orig = f.originalName.trim();
+        if (name.isNotEmpty && url.contains(name)) return true;
+        if (orig.isNotEmpty && url.contains(orig)) return true;
+        if (session != null) {
+          final fileUrl = session!.fileUrl(f);
+          if (fileUrl.isNotEmpty &&
+              (fileUrl == url || url.contains(fileUrl) || fileUrl.contains(url))) {
+            return true;
+          }
+        }
+      }
+      return false;
+    }
 
     Widget gifEmbed(String url) {
       return _MediaImage(
@@ -343,6 +454,20 @@ class MessageEmbeds extends StatelessWidget {
           if (emittedGifs.add(url)) children.add(gifEmbed(url));
         } else if (isImageMediaType('${map['mediaType']}')) {
           children.add(_MediaImage(url: url));
+        } else if (isVideoMediaType('${map['mediaType']}') ||
+            isVideoFileUrl(url)) {
+          if (!alreadyAttached(url) && emittedMedia.add(url)) {
+            children.add(
+              AttachmentVideoPlayer(url: url, id: url),
+            );
+          }
+        } else if (isAudioMediaType('${map['mediaType']}') ||
+            isAudioFileUrl(url)) {
+          if (!alreadyAttached(url) && emittedMedia.add(url)) {
+            children.add(
+              AttachmentAudioPlayer(url: url, id: url),
+            );
+          }
         }
       } else if (kind == 'open_graph') {
         final url = map['url'] is String ? map['url'] as String : null;

@@ -67,7 +67,7 @@ external void _setCameraDevice(JSString? deviceId);
 external JSPromise<JSAny?> _getDisplay(JSBoolean withAudio);
 
 @JS('KurierMediasoup.produceKind')
-external JSPromise<JSAny?> _produceKind(JSString kind);
+external JSPromise<JSAny?> _produceKind(JSString kind, JSBoolean simulcast);
 
 @JS('KurierMediasoup.consume')
 external JSPromise<JSAny?> _consume(JSString json);
@@ -259,8 +259,8 @@ class PlatformBridge {
     await _awaitPacked(_getDisplay(withAudio.toJS));
   }
 
-  static Future<String> produce(String kind) async {
-    return _awaitPacked(_produceKind(kind.toJS));
+  static Future<String> produce(String kind, {bool simulcast = false}) async {
+    return _awaitPacked(_produceKind(kind.toJS, simulcast.toJS));
   }
 
   static Future<String> consume(Map<String, dynamic> info) async {
@@ -416,6 +416,7 @@ class PlatformBridge {
     bind('visibility');
     bind('speaking');
     bind('micEnded');
+    bind('screenEnded');
   }
 
   static Future<String> _awaitPacked(JSPromise<JSAny?> promise) async {

@@ -73,6 +73,7 @@ class SessionController extends ChangeNotifier {
   String serverId = '';
 
   int? selectedChannelId;
+  int? lastTextChannelId;
   bool showingDms = false;
   bool membersOpen = true;
   double sidebarWidth = kSidebarWidth;
@@ -108,6 +109,8 @@ class SessionController extends ChangeNotifier {
   int? voiceRttMs;
   TransportStatsData transportStats = TransportStatsData.empty;
   Timer? _voiceStatsTimer;
+  final _producerResyncs = <Timer>[];
+  Completer<void>? _recvConnected;
   Map<String, dynamic>? rtpCapabilities;
   String? sendTransportId;
   final consumerKeys = <String, String>{};
@@ -115,6 +118,8 @@ class SessionController extends ChangeNotifier {
   final localUserVolumes = <int, double>{};
   final speaking = <int, int>{};
   final watchingStreams = <String>{};
+
+  bool get simulcastEnabled => asBool(publicSettings['webRtcSimulcastEnabled']);
 
   bool searchOpen = false;
   String searchQuery = '';
@@ -695,12 +700,10 @@ class SessionController extends ChangeNotifier {
   void _upsertUser(dynamic d, {String? status}) {
     final raw = extractUserPayload(d);
     if (raw == null) return;
-    final u = KurierUser.fromJson(raw);
+    final id = asInt(raw['id']) ?? 0;
+    final existing = id == 0 ? null : users[id];
+    final u = KurierUser.fromJson(raw, existing: existing);
     if (u.id == 0) return;
-    final existing = users[u.id];
-    if (existing != null && u.roleIds.isEmpty && existing.roleIds.isNotEmpty) {
-      u.roleIds = List<int>.from(existing.roleIds);
-    }
     if (existing != null) {
       if (KurierUser.isPlaceholderName(u.name) &&
           !KurierUser.isPlaceholderName(existing.name)) {
@@ -842,6 +845,9 @@ class SessionController extends ChangeNotifier {
     );
     occupiedSince[cid] = asInt(m['occupiedSince']) ?? occupiedSince[cid];
     notifyListeners();
+    if (uid != ownUserId && cid == connectedVoiceChannelId) {
+      _scheduleProducerResync();
+    }
   }
 
   void _onVoiceLeave(dynamic d) {
@@ -849,6 +855,11 @@ class SessionController extends ChangeNotifier {
     final cid = asInt(m['channelId']);
     final uid = asInt(m['userId']);
     if (cid != null && uid != null) voiceMap[cid]?.remove(uid);
+    if (uid == ownUserId &&
+        connectedVoiceChannelId == cid &&
+        voiceState != 'connecting') {
+      _resetVoiceLocal();
+    }
     notifyListeners();
   }
 
@@ -876,7 +887,13 @@ class SessionController extends ChangeNotifier {
       voiceMap.putIfAbsent(to, () => {});
       voiceMap[to]![uid] = st ?? VoiceUserState();
     }
-    if (uid == ownUserId) connectedVoiceChannelId = to;
+    if (uid == ownUserId) {
+      if (to == null) {
+        if (voiceState != 'connecting') _resetVoiceLocal();
+      } else {
+        connectedVoiceChannelId = to;
+      }
+    }
     notifyListeners();
   }
 
@@ -1000,6 +1017,48 @@ class SessionController extends ChangeNotifier {
   bool canAny(Iterable<String> permissions) => permissions.any(can);
 
   bool get isOwner => me?.roleIds.contains(AppConfig.ownerRoleId) == true;
+
+  bool canJoinVoiceChannel(int channelId) =>
+      can(Permission.joinVoiceChannels) &&
+      canChannel(channelId, ChannelPermission.join);
+
+  bool canSendInChannel(int? channelId) {
+    if (channelId == null) return false;
+    final ch = channels[channelId];
+    if (ch == null) return false;
+    if (ch.isDm) return true;
+    if (!can(Permission.sendMessages)) return false;
+    return canChannel(channelId, ChannelPermission.sendMessages);
+  }
+
+  bool canEnableWebcam() {
+    if (!can(Permission.enableWebcam)) return false;
+    final id = connectedVoiceChannelId;
+    return id == null || canChannel(id, ChannelPermission.webcam);
+  }
+
+  bool canShareScreen() {
+    if (!can(Permission.shareScreen)) return false;
+    final id = connectedVoiceChannelId;
+    return id == null || canChannel(id, ChannelPermission.shareScreen);
+  }
+
+  int errorEpoch = 0;
+
+  void notifyError(Object err) {
+    final text = err is String ? err : _voiceErrorText(err);
+    error = isPermissionError(err) || isPermissionError(text)
+        ? missingPermissionKey
+        : text;
+    errorEpoch++;
+    notifyListeners();
+  }
+
+  void notifyMissingPermission() => notifyError(missingPermissionKey);
+
+  void clearError() {
+    error = null;
+  }
 
   int highestRolePosition(List<int> roleIds) {
     if (roleIds.contains(AppConfig.ownerRoleId)) return 1 << 30;
@@ -1187,9 +1246,21 @@ class SessionController extends ChangeNotifier {
         [];
   }
 
+  void _rememberTextChannel(KurierChannel? ch) {
+    if (ch != null && ch.isText && !ch.isDm && canViewChannel(ch)) {
+      lastTextChannelId = ch.id;
+    }
+  }
+
   Future<void> selectChannel(int id) async {
     if (selectedChannelId == id) {
       showingDms = channels[id]?.isDm ?? false;
+      final ch = channels[id];
+      _rememberTextChannel(ch);
+      if (ch?.isVoice == true &&
+          !(connectedVoiceChannelId == id && voiceState == 'connected')) {
+        await joinVoice(id);
+      }
       return;
     }
     final previous = selectedChannelId;
@@ -1199,8 +1270,9 @@ class SessionController extends ChangeNotifier {
     replyTo = null;
     if (previous != null) _trimChannel(previous);
     if (activeHost != null) await store.setLastChannel(activeHost!, id);
-    notifyListeners();
     final ch = channels[id];
+    _rememberTextChannel(ch);
+    notifyListeners();
     if (ch?.isText == true || ch?.isDm == true) {
       await loadMessages(id);
       try {
@@ -1211,6 +1283,14 @@ class SessionController extends ChangeNotifier {
       await joinVoice(id);
     }
     notifyListeners();
+  }
+
+  Future<void> returnToLastTextChannel() async {
+    final id = lastTextChannelId;
+    if (id == null) return;
+    final ch = channels[id];
+    if (ch == null || !ch.isText || ch.isDm || !canViewChannel(ch)) return;
+    await selectChannel(id);
   }
 
   Future<void> returnToVoiceChannel() async {
@@ -1303,9 +1383,7 @@ class SessionController extends ChangeNotifier {
   }
 
   String get gifApiKey {
-    final stored = (store.klipy ?? '').trim();
-    if (stored.isNotEmpty) return stored;
-    return AppConfig.klipyKey;
+    return AppConfig.klipyKeyFor(stored: store.klipy, host: activeHost);
   }
 
   /// Search GIFs via vanilla `gifs.search`, then KLIPY trending/search.
@@ -1342,6 +1420,10 @@ class SessionController extends ChangeNotifier {
     final cid = selectedChannelId;
     text = _clampMessageText(text);
     if (cid == null || (text.trim().isEmpty && files.isEmpty)) return;
+    if (!canSendInChannel(cid)) {
+      notifyMissingPermission();
+      return;
+    }
     final html = _messageHtml(text);
     final optimisticId = -DateTime.now().millisecondsSinceEpoch;
     final local = KurierMessage(
@@ -1375,8 +1457,7 @@ class SessionController extends ChangeNotifier {
     } catch (e) {
       messages[cid]?.removeWhere((m) => m.id == optimisticId);
       threadMessages.removeWhere((m) => m.id == optimisticId);
-      error = '$e';
-      notifyListeners();
+      notifyError(e);
     }
   }
 
@@ -1565,7 +1646,7 @@ class SessionController extends ChangeNotifier {
       mentionMessages.sort((a, b) => b.createdAt.compareTo(a.createdAt));
       mentionsLoaded = true;
     } catch (e) {
-      error = '$e';
+      notifyError(e);
       mentionMessages = [];
     }
     loadingMentions = false;
@@ -1598,7 +1679,7 @@ class SessionController extends ChangeNotifier {
               .toList() ??
           [];
     } catch (e) {
-      error = '$e';
+      notifyError(e);
     }
     searching = false;
     notifyListeners();
@@ -1708,18 +1789,29 @@ class SessionController extends ChangeNotifier {
   }
 
   Future<void> setVoiceStatus(int channelId, String status) async {
+    final text = asOptionalString(status);
+    final ch = channels[channelId];
+    if (ch != null) {
+      ch.topic = text;
+      ch.voiceStatus = text;
+      notifyListeners();
+    }
     await trpc!.mutate('channels.updateVoiceStatus', {
       'channelId': channelId,
-      'status': status,
+      'topic': text,
+      'status': text,
     });
   }
 
   Future<void> joinVoice(int channelId) async {
-    if (connectedVoiceChannelId == channelId &&
-        (voiceState == 'connected' || voiceState == 'connecting')) {
+    if (connectedVoiceChannelId == channelId && voiceState == 'connected') {
       return;
     }
     if (voiceState == 'connecting') return;
+    if (!canJoinVoiceChannel(channelId)) {
+      notifyMissingPermission();
+      return;
+    }
     if (connectedVoiceChannelId != null &&
         connectedVoiceChannelId != channelId) {
       await leaveVoice();
@@ -1757,7 +1849,9 @@ class SessionController extends ChangeNotifier {
         try {
           await trpc?.mutate('voice.leave');
         } catch (_) {}
-        connectedVoiceChannelId = null;
+        _resetVoiceLocal();
+        voiceState = 'connecting';
+        await Future<void>.delayed(const Duration(milliseconds: 400));
         try {
           await _establishVoice(channelId, haveMic: haveMic);
         } catch (e2) {
@@ -1792,6 +1886,7 @@ class SessionController extends ChangeNotifier {
     final send = asJsonMap(await trpc!.mutate('voice.createProducerTransport'));
     sendTransportId = await PlatformBridge.createSendTransport(send, ice);
     final recv = asJsonMap(await trpc!.mutate('voice.createConsumerTransport'));
+    _recvConnected = Completer<void>();
     await PlatformBridge.createRecvTransport(recv, ice);
     if (haveMic) {
       try {
@@ -1802,12 +1897,15 @@ class SessionController extends ChangeNotifier {
         micMuted = true;
       }
     }
+    await _waitForRecvConnected();
+    if (connectedVoiceChannelId != channelId) return;
     try {
       final producers = asJsonMap(await trpc!.query('voice.getProducers'));
       await _consumeRemoteIds(producers);
     } catch (e) {
       _log('getProducers: $e');
     }
+    _scheduleProducerResync();
     PlatformBridge.resumePlayback();
     voiceState = 'connected';
     voiceError = null;
@@ -1815,16 +1913,16 @@ class SessionController extends ChangeNotifier {
   }
 
   Future<void> _failVoice(Object e) async {
-    voiceError = _voiceErrorText(e);
-    voiceState = 'failed';
+    voiceError = isPermissionError(e)
+        ? missingPermissionKey
+        : _voiceErrorText(e);
+    notifyError(e);
     _log('joinVoice: $e');
     try {
       await trpc?.mutate('voice.leave');
     } catch (_) {}
-    connectedVoiceChannelId = null;
-    PlatformBridge.closeAll();
-    speaking.clear();
-    _stopVoiceStats();
+    _resetVoiceLocal();
+    voiceState = 'failed';
   }
 
   String _voiceErrorText(Object e) {
@@ -1871,6 +1969,7 @@ class SessionController extends ChangeNotifier {
     bool replace = false,
   }) async {
     if (remoteId == ownUserId) return;
+    if (trpc == null) return;
     final mapKey = '$remoteId:$kind';
     final existing = consumerKeys[mapKey];
     if (existing != null &&
@@ -1883,6 +1982,32 @@ class SessionController extends ChangeNotifier {
       volumes.remove(mapKey);
       PlatformBridge.closeConsumer(existing);
     }
+    Object? lastError;
+    for (var attempt = 0; attempt < 3; attempt++) {
+      try {
+        await _consumeProducerOnce(
+          kind: kind,
+          remoteId: remoteId,
+          mapKey: mapKey,
+        );
+        return;
+      } catch (e) {
+        lastError = e;
+        if (attempt < 2) {
+          await Future<void>.delayed(
+            Duration(milliseconds: 250 * (attempt + 1)),
+          );
+        }
+      }
+    }
+    throw lastError!;
+  }
+
+  Future<void> _consumeProducerOnce({
+    required String kind,
+    required int remoteId,
+    required String mapKey,
+  }) async {
     final raw = await trpc!.mutate('voice.consume', {
       'kind': kind,
       'remoteId': remoteId,
@@ -1894,17 +2019,13 @@ class SessionController extends ChangeNotifier {
     info['rtpKind'] = kind.contains('audio') ? 'audio' : 'video';
     final key = await PlatformBridge.consume(info);
     consumerKeys[mapKey] = key;
-    final watching = isWatchingStream(
-      remoteId,
-      external: StreamKind.isExternal(kind),
-    );
-    final streamMuted = StreamKind.startsClientMuted(kind, watching: watching);
+    final streamMuted = StreamKind.startsClientMuted(kind);
     final localVol = kind == StreamKind.audio ? localUserVolume(remoteId) : 1.0;
     volumes[mapKey] = streamMuted ? 0 : localVol;
     if (soundMuted || streamMuted || localVol <= 0) {
       PlatformBridge.setVolume(key, 0);
     }
-    if (kind.contains('audio')) PlatformBridge.resumePlayback();
+    PlatformBridge.resumePlayback();
     notifyListeners();
   }
 
@@ -1916,7 +2037,20 @@ class SessionController extends ChangeNotifier {
         StreamKind.watchKey(remoteId, external: external),
       );
 
+  bool canWatchStream(int remoteId, {bool external = false}) {
+    final cid = connectedVoiceChannelId;
+    if (cid == null || voiceState != 'connected') return false;
+    if (external) {
+      return (externalStreams[cid] ?? []).any((s) => s.streamId == remoteId);
+    }
+    return voiceMap[cid]?[remoteId]?.sharingScreen == true;
+  }
+
   Future<void> watchStream(int remoteId, {bool external = false}) async {
+    if (!canWatchStream(remoteId, external: external)) {
+      notifyMissingPermission();
+      return;
+    }
     watchingStreams.add(StreamKind.watchKey(remoteId, external: external));
     notifyListeners();
     final kinds = external
@@ -2017,11 +2151,13 @@ class SessionController extends ChangeNotifier {
           PlatformBridge.finishConnectRecv(true);
         } else if (name == 'produce') {
           final body = jsonDecode(payload) as Map<String, dynamic>;
-          final raw = await trpc!.mutate('voice.produce', {
-            'transportId': sendTransportId ?? '',
-            'kind': body['kind'],
-            'rtpParameters': body['rtpParameters'],
-          });
+          final raw = await trpc!.mutate(
+            'voice.produce',
+            voiceProduceMutation(
+              transportId: sendTransportId ?? '',
+              body: body,
+            ),
+          );
           final id = raw is String
               ? raw
               : '${_map(raw)['id'] ?? _map(raw)['producerId'] ?? raw}';
@@ -2033,6 +2169,10 @@ class SessionController extends ChangeNotifier {
                 'direction': name == 'sendState' ? 'send' : 'recv',
               });
             } catch (_) {}
+          } else if (name == 'recvState' && payload == 'connected') {
+            _completeRecvConnected();
+            PlatformBridge.resumePlayback();
+            await _resyncRemoteProducers();
           }
         } else if (name == 'visibility' && payload == 'visible') {
           await _restartIceBoth();
@@ -2041,6 +2181,8 @@ class SessionController extends ChangeNotifier {
           await ensureAudioProducer();
         } else if (name == 'micEnded') {
           await ensureAudioProducer();
+        } else if (name == 'screenEnded') {
+          await _stopScreenShare();
         }
       } catch (e) {
         if (name == 'connectSend') PlatformBridge.finishConnectSend(false);
@@ -2089,6 +2231,11 @@ class SessionController extends ChangeNotifier {
     try {
       await trpc?.mutate('voice.leave');
     } catch (_) {}
+    _resetVoiceLocal();
+    notifyListeners();
+  }
+
+  void _resetVoiceLocal() {
     connectedVoiceChannelId = null;
     PlatformBridge.closeAll();
     webcam = false;
@@ -2098,9 +2245,17 @@ class SessionController extends ChangeNotifier {
     volumes.clear();
     speaking.clear();
     watchingStreams.clear();
+    _cancelProducerResyncs();
+    _completeRecvConnected();
+    _recvConnected = null;
     _stopVoiceStats();
-    notifyListeners();
   }
+
+  @visibleForTesting
+  void applyVoiceLeave(dynamic d) => _onVoiceLeave(d);
+
+  @visibleForTesting
+  void applyVoiceMoved(dynamic d) => _onVoiceMoved(d);
 
   void _startVoiceStats() {
     _voiceStatsTimer?.cancel();
@@ -2169,7 +2324,14 @@ class SessionController extends ChangeNotifier {
       await trpc!.mutate('voice.closeProducer', {'kind': StreamKind.video});
       webcam = false;
     } else {
-      await PlatformBridge.produce(StreamKind.video);
+      if (!canEnableWebcam()) {
+        notifyMissingPermission();
+        return;
+      }
+      await PlatformBridge.produce(
+        StreamKind.video,
+        simulcast: simulcastEnabled,
+      );
       webcam = true;
     }
     await _syncVoiceState();
@@ -2179,27 +2341,40 @@ class SessionController extends ChangeNotifier {
   Future<void> toggleScreen({bool withAudio = false}) async {
     if (connectedVoiceChannelId == null) return;
     if (PlatformBridge.isIos) {
-      error = 'Screen share is not available on iOS Safari.';
-      notifyListeners();
+      notifyError('Screen share is not available on iOS Safari.');
       return;
     }
     if (sharing) {
-      PlatformBridge.closeProducer(StreamKind.screen);
-      PlatformBridge.closeProducer(StreamKind.screenAudio);
-      try {
-        await trpc!.mutate('voice.closeProducer', {'kind': StreamKind.screen});
-      } catch (_) {}
-      sharing = false;
+      await _stopScreenShare();
     } else {
+      if (!canShareScreen()) {
+        notifyMissingPermission();
+        return;
+      }
       await PlatformBridge.getDisplayMedia(withAudio: withAudio);
-      await PlatformBridge.produce(StreamKind.screen);
+      await PlatformBridge.produce(
+        StreamKind.screen,
+        simulcast: simulcastEnabled,
+      );
       if (withAudio) {
         try {
           await PlatformBridge.produce(StreamKind.screenAudio);
         } catch (_) {}
       }
       sharing = true;
+      await _syncVoiceState();
+      notifyListeners();
     }
+  }
+
+  Future<void> _stopScreenShare() async {
+    PlatformBridge.closeProducer(StreamKind.screen);
+    PlatformBridge.closeProducer(StreamKind.screenAudio);
+    try {
+      await trpc?.mutate('voice.closeProducer', {'kind': StreamKind.screen});
+    } catch (_) {}
+    if (!sharing) return;
+    sharing = false;
     await _syncVoiceState();
     notifyListeners();
   }
@@ -2214,6 +2389,21 @@ class SessionController extends ChangeNotifier {
     } catch (_) {}
   }
 
+  Future<void> _waitForRecvConnected() async {
+    final c = _recvConnected;
+    if (c == null || c.isCompleted) return;
+    try {
+      await c.future.timeout(const Duration(seconds: 5));
+    } catch (e) {
+      _log('recv wait: $e');
+    }
+  }
+
+  void _completeRecvConnected() {
+    final c = _recvConnected;
+    if (c != null && !c.isCompleted) c.complete();
+  }
+
   Future<void> _resyncRemoteProducers() async {
     if (connectedVoiceChannelId == null || trpc == null) return;
     try {
@@ -2222,6 +2412,24 @@ class SessionController extends ChangeNotifier {
     } catch (e) {
       _log('resync producers: $e');
     }
+  }
+
+  static const _resyncDelaysMs = [400, 1500, 3500];
+
+  void _scheduleProducerResync() {
+    _cancelProducerResyncs();
+    for (final ms in _resyncDelaysMs) {
+      _producerResyncs.add(
+        Timer(Duration(milliseconds: ms), _resyncRemoteProducers),
+      );
+    }
+  }
+
+  void _cancelProducerResyncs() {
+    for (final t in _producerResyncs) {
+      t.cancel();
+    }
+    _producerResyncs.clear();
   }
 
   Future<void> ensureAudioProducer() async {
@@ -2636,6 +2844,7 @@ class SessionController extends ChangeNotifier {
   void dispose() {
     _panelWidthSave?.cancel();
     _voiceStatsTimer?.cancel();
+    _cancelProducerResyncs();
     super.dispose();
   }
 }

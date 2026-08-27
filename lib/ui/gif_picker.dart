@@ -113,18 +113,14 @@ class _GifPickerState extends State<GifPicker> {
       setState(() {
         _urls = urls;
         _loading = false;
-        _noProvider =
-            urls.isEmpty &&
-            widget.session.gifApiKey.isEmpty &&
-            widget.session.trpc == null;
+        _noProvider = urls.isEmpty && widget.session.gifApiKey.isEmpty;
       });
     } catch (e) {
       if (!mounted) return;
       setState(() {
         _loading = false;
         _error = '$e';
-        _noProvider =
-            widget.session.gifApiKey.isEmpty && widget.session.trpc == null;
+        _noProvider = widget.session.gifApiKey.isEmpty;
       });
     }
   }

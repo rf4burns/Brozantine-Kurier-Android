@@ -37,6 +37,101 @@
     return JSON.stringify({ ok: false, v: msg || "Voice engine error" });
   }
 
+  function flagOn(value) {
+    return value === true || value === "true" || value === 1;
+  }
+
+  function isUserMediaAbort(err) {
+    const name = err && err.name;
+    return name === "NotAllowedError" || name === "NotFoundError" || name === "AbortError";
+  }
+
+  const SCREEN_MAX_BITRATE_KBPS = 2500;
+  const SIMULCAST_WEBCAM_MAX_BITRATE = 900000;
+  const SIMULCAST_MIN_MAX_BITRATE = 100000;
+  const SIMULCAST_LOW_LAYER_MAX_BITRATE = 150000;
+  const SIMULCAST_LOW_LAYER_BITRATE_RATIO = 0.35;
+  const SIMULCAST_LOW_LAYER_MAX_FRAMERATE = 24;
+  const SIMULCAST_LOW_LAYER_SCALE = 4;
+  const SIMULCAST_MID_LAYER_MAX_BITRATE = 500000;
+  const SIMULCAST_MID_LAYER_BITRATE_RATIO = 0.65;
+  const SIMULCAST_MID_LAYER_MAX_FRAMERATE = 30;
+  const SIMULCAST_MID_LAYER_SCALE = 2;
+  const SIMULCAST_SCREEN_LOW_LAYER_MAX_BITRATE = 1500000;
+  const SIMULCAST_SCREEN_LOW_LAYER_BITRATE_RATIO = 0.2;
+  const SIMULCAST_SCREEN_LOW_LAYER_MAX_FRAMERATE = 30;
+  const SIMULCAST_SCREEN_MID_LAYER_MAX_BITRATE = 4000000;
+  const SIMULCAST_SCREEN_MID_LAYER_BITRATE_RATIO = 0.6;
+  const SIMULCAST_SCREEN_MID_LAYER_MAX_FRAMERATE = 60;
+  const SIMULCAST_HIGH_LAYER_SCALE = 1;
+
+  function getSimulcastEncodings(maxBitrate) {
+    const safeMaxBitrate = Math.max(SIMULCAST_MIN_MAX_BITRATE, maxBitrate);
+    return [
+      {
+        maxBitrate: Math.min(
+          SIMULCAST_LOW_LAYER_MAX_BITRATE,
+          Math.round(safeMaxBitrate * SIMULCAST_LOW_LAYER_BITRATE_RATIO)
+        ),
+        maxFramerate: SIMULCAST_LOW_LAYER_MAX_FRAMERATE,
+        scaleResolutionDownBy: SIMULCAST_LOW_LAYER_SCALE,
+      },
+      {
+        maxBitrate: Math.min(
+          SIMULCAST_MID_LAYER_MAX_BITRATE,
+          Math.round(safeMaxBitrate * SIMULCAST_MID_LAYER_BITRATE_RATIO)
+        ),
+        maxFramerate: SIMULCAST_MID_LAYER_MAX_FRAMERATE,
+        scaleResolutionDownBy: SIMULCAST_MID_LAYER_SCALE,
+      },
+      {
+        maxBitrate: safeMaxBitrate,
+        scaleResolutionDownBy: SIMULCAST_HIGH_LAYER_SCALE,
+      },
+    ];
+  }
+
+  function getScreenShareSimulcastEncodings(maxBitrate) {
+    const safeMaxBitrate = Math.max(SIMULCAST_MIN_MAX_BITRATE, maxBitrate);
+    return [
+      {
+        maxBitrate: Math.min(
+          SIMULCAST_SCREEN_LOW_LAYER_MAX_BITRATE,
+          Math.round(safeMaxBitrate * SIMULCAST_SCREEN_LOW_LAYER_BITRATE_RATIO)
+        ),
+        maxFramerate: SIMULCAST_SCREEN_LOW_LAYER_MAX_FRAMERATE,
+        scaleResolutionDownBy: SIMULCAST_LOW_LAYER_SCALE,
+      },
+      {
+        maxBitrate: Math.min(
+          SIMULCAST_SCREEN_MID_LAYER_MAX_BITRATE,
+          Math.round(safeMaxBitrate * SIMULCAST_SCREEN_MID_LAYER_BITRATE_RATIO)
+        ),
+        maxFramerate: SIMULCAST_SCREEN_MID_LAYER_MAX_FRAMERATE,
+        scaleResolutionDownBy: SIMULCAST_MID_LAYER_SCALE,
+      },
+      {
+        maxBitrate: safeMaxBitrate,
+        scaleResolutionDownBy: SIMULCAST_HIGH_LAYER_SCALE,
+      },
+    ];
+  }
+
+  function getSimulcastQualityLayers(encodings) {
+    return encodings.map((_, index) => ({
+      spatialLayer: index,
+      label: index === 0 ? "Low" : index === encodings.length - 1 ? "High" : "Medium",
+    }));
+  }
+
+  function screenCodecOptions(maxKbps) {
+    return {
+      videoGoogleStartBitrate: Math.min(2000, maxKbps),
+      videoGoogleMaxBitrate: maxKbps,
+      videoGoogleMinBitrate: Math.min(200, maxKbps),
+    };
+  }
+
   const SPEAKING_THRESHOLD = 8;
   const SPEAKING_QUIET = 15;
   const SPEAKING_NORMAL = 30;
@@ -67,6 +162,12 @@
     _statsPrev: {},
     _transportPrev: { producer: null, consumer: null, screen: null },
     _transportTotals: { sent: 0, received: 0 },
+    _gains: {},
+    _volumes: {},
+    _keepAlive: null,
+    _dummyTracks: {},
+    _boundMedia: {},
+    _bindTimers: {},
 
     async _run(work) {
       try {
@@ -98,7 +199,94 @@
       if (this._audioCtx.state === "suspended") {
         this._audioCtx.resume().catch(() => {});
       }
+      this._applyCtxSink();
       return this._audioCtx;
+    },
+
+    _applyCtxSink() {
+      const ctx = this._audioCtx;
+      if (!ctx || typeof ctx.setSinkId !== "function" || !this._outputDevice) return;
+      ctx.setSinkId(this._outputDevice).catch(() => {});
+    },
+
+    _startKeepAlive() {
+      const ctx = this._ensureAudioCtx();
+      if (this._keepAlive) return;
+      try {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        gain.gain.value = 0.0001;
+        osc.frequency.value = 20;
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start();
+        this._keepAlive = { osc: osc, gain: gain };
+      } catch (_) {}
+    },
+
+    _stopKeepAlive() {
+      const keep = this._keepAlive;
+      if (!keep) return;
+      try {
+        keep.osc.stop();
+      } catch (_) {}
+      try {
+        keep.osc.disconnect();
+      } catch (_) {}
+      try {
+        keep.gain.disconnect();
+      } catch (_) {}
+      this._keepAlive = null;
+    },
+
+    _isPlaybackKey(key) {
+      const s = String(key);
+      return s.endsWith(":screen_audio") || s.endsWith(":external_audio");
+    },
+
+    _attachVoiceGraph(key, stream) {
+      this._detachVoiceGraph(key);
+      if (!stream || !stream.getAudioTracks || !stream.getAudioTracks().length) {
+        return false;
+      }
+      try {
+        const ctx = this._ensureAudioCtx();
+        const source = ctx.createMediaStreamSource(stream);
+        const gain = ctx.createGain();
+        const stored = this._volumes[key];
+        const initial = typeof stored === "number" ? stored : this._isPlaybackKey(key) ? 0 : 1;
+        gain.gain.value = initial;
+        source.connect(gain);
+        gain.connect(ctx.destination);
+        this._gains[key] = { source: source, gain: gain };
+        return true;
+      } catch (err) {
+        console.warn("voice graph failed", key, err);
+        return false;
+      }
+    },
+
+    _detachVoiceGraph(key) {
+      const graph = this._gains[key];
+      if (!graph) return;
+      try {
+        graph.source.disconnect();
+      } catch (_) {}
+      try {
+        graph.gain.disconnect();
+      } catch (_) {}
+      delete this._gains[key];
+    },
+
+    _stopDummyTracks(key) {
+      const tracks = this._dummyTracks[key];
+      if (!tracks) return;
+      tracks.forEach((t) => {
+        try {
+          t.stop();
+        } catch (_) {}
+      });
+      delete this._dummyTracks[key];
     },
 
     _emitSpeaking(key, level, intensity) {
@@ -277,12 +465,14 @@
       this._armConnect(this.sendTransport, "connectSend", "_pendingConnectSend");
       this.sendTransport.on("produce", ({ kind, rtpParameters, appData }, callback, errback) => {
         this._pendingProduce = { callback, errback };
+        const data = appData || {};
         this._emit(
           "produce",
           JSON.stringify({
-            kind: (appData && appData.kind) || kind,
+            kind: data.kind || kind,
             rtpParameters,
-            appData,
+            appData: data,
+            qualityLayers: data.qualityLayers,
           })
         );
         setTimeout(() => {
@@ -415,7 +605,10 @@
         if (audio) {
           this._setMicStream(stream);
         }
-        if (video) this.localStreams.cam = stream;
+        if (video) {
+          this.localStreams.cam = stream;
+          this._rebindMedia("local:video");
+        }
         return stream.id;
       } catch (err) {
         if (deviceId && audio) {
@@ -467,6 +660,7 @@
         this.localStreams.preview = await navigator.mediaDevices.getUserMedia({
           video,
         });
+        this._rebindMedia("preview:video");
         return "preview:video";
       });
     },
@@ -481,6 +675,7 @@
 
     setOutputDevice(deviceId) {
       this._outputDevice = deviceId || "";
+      this._applyCtxSink();
       const nodes = document.querySelectorAll("audio, video");
       nodes.forEach((el) => this._applySink(el));
     },
@@ -494,18 +689,64 @@
       el.setSinkId(this._outputDevice).catch(() => {});
     },
 
+    _vp8Codec() {
+      const codecs =
+        this.device &&
+        this.device.rtpCapabilities &&
+        this.device.rtpCapabilities.codecs;
+      if (!codecs || !codecs.length) return undefined;
+      return codecs.find((c) => String(c.mimeType || "").toLowerCase() === "video/vp8");
+    },
+
+    _watchScreenTrack(stream) {
+      if (!stream) return;
+      stream.getVideoTracks().forEach((t) => {
+        try {
+          t.contentHint = "detail";
+        } catch (_) {}
+        t.onended = () => {
+          if (this.localStreams.screen === stream) this._emit("screenEnded", "");
+        };
+      });
+    },
+
     async getDisplayMedia(withAudio) {
       return this._run(async () => {
-      const stream = await navigator.mediaDevices.getDisplayMedia({
-        video: true,
-        audio: !!withAudio,
-      });
+      const video = {
+        width: { ideal: 1920 },
+        height: { ideal: 1080 },
+        frameRate: { ideal: 30 },
+      };
+      const audio = withAudio
+        ? {
+            echoCancellation: false,
+            noiseSuppression: false,
+            autoGainControl: false,
+          }
+        : false;
+      const preferred = {
+        video,
+        audio,
+        selfBrowserSurface: "exclude",
+        preferCurrentTab: false,
+        surfaceSwitching: "include",
+        monitorTypeSurfaces: "include",
+      };
+      let stream;
+      try {
+        stream = await navigator.mediaDevices.getDisplayMedia(preferred);
+      } catch (err) {
+        if (isUserMediaAbort(err)) throw err;
+        stream = await navigator.mediaDevices.getDisplayMedia({ video, audio });
+      }
       this.localStreams.screen = stream;
+      this._watchScreenTrack(stream);
+      this._rebindMedia("local:screen");
       return stream.id;
       });
     },
 
-    async produceKind(kind) {
+    async produceKind(kind, simulcastEnabled) {
       return this._run(async () => {
       let track;
       if (kind === "audio") {
@@ -526,6 +767,11 @@
       }
       if (!track) throw new Error("no local track for " + kind);
       if (!this.sendTransport) throw new Error("send transport missing");
+      if (kind === "screen") {
+        try {
+          track.contentHint = "detail";
+        } catch (_) {}
+      }
       const existing = this.producers[kind];
       if (existing) {
         try {
@@ -533,15 +779,43 @@
         } catch (_) {}
         delete this.producers[kind];
       }
-      const producer = await this.sendTransport.produce({
+      const vp8 = this._vp8Codec();
+      const options = {
         track,
         stopTracks: false,
         appData: { kind },
-      });
+      };
+      if (kind === "screen") {
+        options.codecOptions = screenCodecOptions(SCREEN_MAX_BITRATE_KBPS);
+        if (vp8) options.codec = vp8;
+      }
+      let producer;
+      const useSimulcast = flagOn(simulcastEnabled) && vp8 && (kind === "screen" || kind === "video");
+      if (useSimulcast) {
+        const encodings =
+          kind === "screen"
+            ? getScreenShareSimulcastEncodings(SCREEN_MAX_BITRATE_KBPS * 1000)
+            : getSimulcastEncodings(SIMULCAST_WEBCAM_MAX_BITRATE);
+        const qualityLayers = getSimulcastQualityLayers(encodings);
+        try {
+          producer = await this.sendTransport.produce({
+            ...options,
+            codec: vp8,
+            encodings,
+            appData: { kind, qualityLayers },
+          });
+        } catch (_) {
+          producer = await this.sendTransport.produce(options);
+        }
+      } else {
+        producer = await this.sendTransport.produce(options);
+      }
       this.producers[kind] = producer;
       if (kind === "audio" && this.localStreams.mic) {
         this._startMeter("local", this.localStreams.mic);
       }
+      if (kind === "video") this._rebindMedia("local:video");
+      if (kind === "screen") this._rebindMedia("local:screen");
       return producer.id;
       });
     },
@@ -556,19 +830,57 @@
         kind: info.rtpKind || (info.consumerKind && String(info.consumerKind).includes("audio") ? "audio" : "video"),
         rtpParameters: info.consumerRtpParameters,
       });
+      try {
+        await consumer.resume();
+      } catch (_) {}
       const key = info.remoteId + ":" + info.consumerKind;
       this.consumers[key] = consumer;
       const stream = new MediaStream([consumer.track]);
       if (consumer.track.kind === "audio") {
         this._attachStream(key, stream, "audio");
         this._startMeter(key, stream);
+        this._ensureAudioCtx();
+        const reattach = () => {
+          if (this.consumers[key] !== consumer) return;
+          this._attachVoiceGraph(key, stream);
+          this._ensureAudioCtx();
+          this.resumePlayback();
+        };
+        consumer.track.addEventListener("unmute", reattach);
+        if (!consumer.track.muted) reattach();
+      } else {
+        this._rebindMedia(key);
       }
       return key;
       });
     },
 
+    _mediaTrackForKey(key) {
+      if (key === "local:video") {
+        return this.localStreams.cam && this.localStreams.cam.getVideoTracks()[0];
+      }
+      if (key === "preview:video") {
+        return this.localStreams.preview && this.localStreams.preview.getVideoTracks()[0];
+      }
+      if (key === "local:screen") {
+        return this.localStreams.screen && this.localStreams.screen.getVideoTracks()[0];
+      }
+      const consumer = this.consumers[key];
+      return consumer && consumer.track;
+    },
+
+    _rebindMedia(key) {
+      const el = this._boundMedia[key];
+      if (el) this.bindMediaElement(key, el);
+    },
+
     bindMediaElement(key, el) {
       if (!el) return;
+      this._boundMedia[key] = el;
+      if (this._bindTimers[key]) {
+        clearInterval(this._bindTimers[key]);
+        delete this._bindTimers[key];
+      }
       el.id = "kurier-media-" + key;
       el.autoplay = true;
       el.playsInline = true;
@@ -576,26 +888,21 @@
       el.setAttribute("playsinline", "true");
       el.setAttribute("muted", "true");
       const apply = () => {
-        let track;
-        if (key === "local:video") {
-          track = this.localStreams.cam && this.localStreams.cam.getVideoTracks()[0];
-        } else if (key === "preview:video") {
-          track = this.localStreams.preview && this.localStreams.preview.getVideoTracks()[0];
-        } else if (key === "local:screen") {
-          track = this.localStreams.screen && this.localStreams.screen.getVideoTracks()[0];
-        } else {
-          const consumer = this.consumers[key];
-          track = consumer && consumer.track;
-        }
+        const bound = this._boundMedia[key];
+        if (!bound) return true;
+        const track = this._mediaTrackForKey(key);
         if (!track) return false;
-        el.srcObject = new MediaStream([track]);
-        this._playMedia(el);
+        bound.srcObject = new MediaStream([track]);
+        this._playMedia(bound);
         return true;
       };
       if (apply()) return;
       let n = 0;
-      const t = setInterval(() => {
-        if (apply() || ++n > 40) clearInterval(t);
+      this._bindTimers[key] = setInterval(() => {
+        if (apply() || ++n > 80) {
+          clearInterval(this._bindTimers[key]);
+          delete this._bindTimers[key];
+        }
       }, 50);
     },
 
@@ -617,22 +924,48 @@
         host.appendChild(el);
       }
       el.srcObject = stream;
+      if (kind === "audio") {
+        this._stopDummyTracks(key);
+        const dummy = stream.getAudioTracks().map((t) => t.clone());
+        this._dummyTracks[key] = dummy;
+        el.srcObject = dummy.length ? new MediaStream(dummy) : stream;
+      }
       this._applySink(el);
-      const playbackStream =
-        String(key).endsWith(":screen_audio") ||
-        String(key).endsWith(":external_audio");
-      el.muted = playbackStream;
-      if (playbackStream) el.volume = 0;
+      const playbackStream = this._isPlaybackKey(key);
+      const usedGraph = kind === "audio" ? this._attachVoiceGraph(key, stream) : false;
+      if (usedGraph) {
+        el.muted = false;
+        el.volume = 0;
+      } else if (kind === "audio") {
+        el.muted = playbackStream || this._volumes[key] === 0;
+        el.volume = playbackStream
+          ? 0
+          : typeof this._volumes[key] === "number"
+            ? this._volumes[key]
+            : 1;
+      } else {
+        el.muted = true;
+      }
       this._playMedia(el);
       el.addEventListener("canplay", () => this._playMedia(el), { once: true });
     },
 
     setConsumerVolume(key, volume) {
+      const v = Math.max(0, Math.min(1, volume));
+      this._volumes[key] = v;
+      const graph = this._gains[key];
+      if (graph && graph.gain) {
+        graph.gain.gain.value = v;
+      }
       const el = document.getElementById("kurier-media-" + key);
       if (!el) return;
-      const v = Math.max(0, Math.min(1, volume));
-      el.volume = v;
-      el.muted = v === 0;
+      if (graph) {
+        el.volume = 0;
+        el.muted = false;
+      } else {
+        el.volume = v;
+        el.muted = v === 0;
+      }
     },
 
     closeProducer(kind) {
@@ -965,7 +1298,12 @@
 
     consumerTrackLive(key) {
       const c = this.consumers[key];
-      return !!(c && c.track && c.track.readyState === "live");
+      return !!(
+        c &&
+        c.track &&
+        c.track.readyState === "live" &&
+        !c.track.muted
+      );
     },
 
     audioProducerLive() {
@@ -981,8 +1319,9 @@
       const attempt = (n) => {
         const p = el.play();
         if (p && typeof p.catch === "function") {
-          p.catch(() => {
-            if (n < 4) setTimeout(() => attempt(n + 1), 200);
+          p.catch((err) => {
+            console.warn("media play failed", el.id, err);
+            if (n < 8) setTimeout(() => attempt(n + 1), 250);
           });
         }
       };
@@ -991,6 +1330,9 @@
 
     closeConsumer(key) {
       this._stopMeter(key);
+      this._detachVoiceGraph(key);
+      this._stopDummyTracks(key);
+      delete this._volumes[key];
       delete this._statsPrev[key];
       const c = this.consumers[key];
       if (c) {
@@ -1000,13 +1342,18 @@
         delete this.consumers[key];
       }
       const el = document.getElementById("kurier-media-" + key);
-      if (el) el.remove();
+      const host = document.getElementById("kurier-media-host");
+      if (el && host && host.contains(el)) el.remove();
     },
 
     closeAll() {
       this._stopAllMeters();
       Object.keys(this.producers).forEach((k) => this.closeProducer(k));
       Object.keys(this.consumers).forEach((k) => this.closeConsumer(k));
+      this._stopKeepAlive();
+      this._gains = {};
+      this._volumes = {};
+      this._dummyTracks = {};
       ["mic", "cam", "screen", "micTest", "preview"].forEach((name) => {
         const s = this.localStreams[name];
         if (s) s.getTracks().forEach((t) => t.stop());
@@ -1025,6 +1372,9 @@
       this._pendingConnectRecv = null;
       this._pendingProduce = null;
       this._statsPrev = {};
+      Object.keys(this._bindTimers).forEach((key) => clearInterval(this._bindTimers[key]));
+      this._bindTimers = {};
+      this._boundMedia = {};
       this._resetTransportStats();
     },
 
@@ -1055,16 +1405,9 @@
     async unlockAudio() {
       return this._run(async () => {
       try {
-        const Ctx = window.AudioContext || window.webkitAudioContext;
-        if (!this._audioCtx) this._audioCtx = new Ctx();
-        if (this._audioCtx.state === "suspended") await this._audioCtx.resume();
-        const osc = this._audioCtx.createOscillator();
-        const gain = this._audioCtx.createGain();
-        gain.gain.value = 0.0001;
-        osc.connect(gain);
-        gain.connect(this._audioCtx.destination);
-        osc.start();
-        osc.stop(this._audioCtx.currentTime + 0.05);
+        const ctx = this._ensureAudioCtx();
+        if (ctx.state === "suspended") await ctx.resume();
+        this._startKeepAlive();
       } catch (_) {}
       this.resumePlayback();
       return "";
@@ -1113,6 +1456,10 @@
     },
 
     resumePlayback() {
+      if (this._audioCtx) this._ensureAudioCtx();
+      if (this.sendTransport || this.recvTransport || this._keepAlive) {
+        this._startKeepAlive();
+      }
       document.querySelectorAll('[id^="kurier-media-"]').forEach((el) => {
         this._playMedia(el);
       });

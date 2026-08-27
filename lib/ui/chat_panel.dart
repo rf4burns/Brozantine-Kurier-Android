@@ -17,6 +17,7 @@ import '../protocol/platform.dart';
 import '../session/session_controller.dart';
 import 'context_menu.dart';
 import 'emoji_glyph.dart';
+import 'attachment_media.dart';
 import 'emoji_picker.dart';
 import 'gif_picker.dart';
 import 'member_list.dart';
@@ -611,7 +612,11 @@ class MessageTile extends StatelessWidget {
     );
     final user = author.user;
     final mentioned = hasMention(message.content, s.ownUserId);
-    final displayHtml = hideGifUrlsInHtml(message.content ?? '');
+    final displayHtml = hideEmbeddedMediaUrlsInHtml(
+      hideGifUrlsInHtml(message.content ?? ''),
+      message.files,
+      message.metadata,
+    );
     final showBody = messageHtmlHasVisibleText(displayHtml);
     final surface = _MessageSurface(
       mentioned: mentioned,
@@ -779,9 +784,6 @@ class MessageTile extends StatelessWidget {
   Widget _quickReactionHeader(BuildContext context, VoidCallback close) {
     final s = session;
     final custom = s.customEmojis;
-    final touch = breakpointOf(MediaQuery.sizeOf(context).width) !=
-        Breakpoint.desktop;
-    final height = touch ? minTap : 36.0;
     return Padding(
       padding: const EdgeInsets.fromLTRB(2, 2, 2, 6),
       child: Row(
@@ -800,7 +802,7 @@ class MessageTile extends StatelessWidget {
                       s.toggleReaction(message.id, e);
                     },
                     child: SizedBox(
-                      height: height,
+                      height: 36,
                       child: Center(
                         child: EmojiGlyph(
                           key: ValueKey('menu-react-$e'),
@@ -827,6 +829,8 @@ class MessageTile extends StatelessWidget {
     final canPin = s.can(Permission.pinMessages);
     final canDelete =
         message.userId == s.ownUserId || s.can(Permission.manageMessages);
+
+    final canCopy = htmlToPlainText(message.content ?? '').isNotEmpty;
 
     final groups = <List<MenuAction>>[
       if (canReact)
@@ -868,12 +872,14 @@ class MessageTile extends StatelessWidget {
           ),
       ],
       [
-        MenuAction(
-          label: l('copyText'),
-          icon: Icons.content_copy,
-          onTap: () =>
-              PlatformBridge.copyText(htmlToPlainText(message.content ?? '')),
-        ),
+        if (canCopy)
+          MenuAction(
+            label: l('copyText'),
+            icon: Icons.content_copy,
+            onTap: () => PlatformBridge.copyText(
+              htmlToPlainText(message.content ?? ''),
+            ),
+          ),
         if (message.reactions.isNotEmpty)
           MenuAction(
             label: l('viewReactions'),
@@ -921,7 +927,17 @@ class MessageTile extends StatelessWidget {
     if (breakpointOf(MediaQuery.sizeOf(context).width) == Breakpoint.phone) {
       return null;
     }
-    if (!s.can(Permission.reactToMessages)) return null;
+    final l = L10n.of(context);
+    final canReact = s.can(Permission.reactToMessages);
+    final canSend = s.canSendInChannel(message.channelId);
+    final canEdit = message.userId == s.ownUserId && message.editable;
+    final canPin = s.can(Permission.pinMessages);
+    final canDelete =
+        message.userId == s.ownUserId || s.can(Permission.manageMessages);
+    final canCopy = htmlToPlainText(message.content ?? '').isNotEmpty;
+    final canMore = canSend || canDelete || message.reactions.isNotEmpty;
+    final showActions = canEdit || canPin || canSend || canCopy || canMore;
+    if (!canReact && !showActions) return null;
     final custom = s.customEmojis;
     return Material(
       color: context.p.sidebar,
@@ -929,36 +945,127 @@ class MessageTile extends StatelessWidget {
       borderRadius: BorderRadius.circular(8),
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            for (final e in QuickReactions.top(count: 3))
-              InkWell(
-                borderRadius: BorderRadius.circular(6),
-                onTap: () => s.toggleReaction(message.id, e),
-                child: Padding(
-                  padding: const EdgeInsets.all(4),
-                  child: EmojiGlyph(
-                    key: ValueKey('hover-$e'),
-                    emojiKey: e,
-                    customEmojis: custom,
-                    size: 18,
+        child: Builder(
+          builder: (barCtx) {
+            return Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (canReact) ...[
+                  for (final e in QuickReactions.top(count: 3))
+                    InkWell(
+                      borderRadius: BorderRadius.circular(6),
+                      onTap: () => s.toggleReaction(message.id, e),
+                      child: Padding(
+                        padding: const EdgeInsets.all(4),
+                        child: EmojiGlyph(
+                          key: ValueKey('hover-$e'),
+                          emojiKey: e,
+                          customEmojis: custom,
+                          size: 18,
+                        ),
+                      ),
+                    ),
+                  _hoverBarButton(
+                    context: context,
+                    key: const ValueKey('hover-add-reaction'),
+                    tooltip: l('addReaction'),
+                    icon: Icons.add_reaction_outlined,
+                    onTap: () => _pickEmoji(context),
                   ),
-                ),
-              ),
-            InkWell(
-              borderRadius: BorderRadius.circular(6),
-              onTap: () => _pickEmoji(context),
-              child: Padding(
-                padding: const EdgeInsets.all(4),
-                child: Icon(
-                  Icons.add_reaction_outlined,
-                  size: 18,
-                  color: context.p.muted,
-                ),
-              ),
-            ),
-          ],
+                  if (showActions)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 2,
+                        vertical: 6,
+                      ),
+                      child: SizedBox(
+                        width: 1,
+                        child: ColoredBox(color: context.p.divider),
+                      ),
+                    ),
+                ],
+                if (canEdit)
+                  _hoverBarButton(
+                    context: context,
+                    key: const ValueKey('hover-edit'),
+                    tooltip: l('edit'),
+                    icon: Icons.edit_outlined,
+                    onTap: () => _edit(context),
+                  ),
+                if (canPin)
+                  _hoverBarButton(
+                    context: context,
+                    key: const ValueKey('hover-pin'),
+                    tooltip: message.pinned ? l('unpin') : l('pin'),
+                    icon: message.pinned
+                        ? Icons.push_pin
+                        : Icons.push_pin_outlined,
+                    onTap: () => s.togglePin(message.id),
+                  ),
+                if (canSend)
+                  _hoverBarButton(
+                    context: context,
+                    key: const ValueKey('hover-reply'),
+                    tooltip: l('reply'),
+                    icon: Icons.reply,
+                    onTap: () {
+                      s.replyTo = message;
+                      s.refresh();
+                    },
+                  ),
+                if (canCopy)
+                  _hoverBarButton(
+                    context: context,
+                    key: const ValueKey('hover-copy'),
+                    tooltip: l('copyText'),
+                    icon: Icons.content_copy,
+                    onTap: () => PlatformBridge.copyText(
+                      htmlToPlainText(message.content ?? ''),
+                    ),
+                  ),
+                if (canMore)
+                  _hoverBarButton(
+                    context: context,
+                    key: const ValueKey('hover-more'),
+                    tooltip: l('more'),
+                    icon: Icons.more_horiz,
+                    onTap: () {
+                      final box = barCtx.findRenderObject() as RenderBox?;
+                      final pos = box == null
+                          ? Offset.zero
+                          : box.localToGlobal(Offset(0, box.size.height));
+                      showAppContextMenu(
+                        context,
+                        pos,
+                        _actions(context, l),
+                        header: canReact ? _quickReactionHeader : null,
+                      );
+                    },
+                  ),
+              ],
+            );
+          },
+        ),
+      ),
+    );
+  }
+
+  Widget _hoverBarButton({
+    required BuildContext context,
+    Key? key,
+    required String tooltip,
+    required IconData icon,
+    required VoidCallback onTap,
+  }) {
+    return Tooltip(
+      message: tooltip,
+      child: InkWell(
+        key: key,
+        borderRadius: BorderRadius.circular(6),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.all(4),
+          child: Icon(icon, size: 18, color: context.p.muted),
         ),
       ),
     );
@@ -992,12 +1099,16 @@ class MessageTile extends StatelessWidget {
       );
     }
     if (f.isVideo) {
-      return Padding(
-        padding: const EdgeInsets.only(top: 4),
-        child: TextButton(
-          onPressed: () => launchUrl(Uri.parse(url)),
-          child: Text(f.originalName),
-        ),
+      return AttachmentVideoPlayer(
+        url: url,
+        id: attachmentMediaIdFor(fileId: f.id, name: f.name),
+      );
+    }
+    if (f.isAudio) {
+      return AttachmentAudioPlayer(
+        url: url,
+        id: attachmentMediaIdFor(fileId: f.id, name: f.name),
+        label: f.originalName,
       );
     }
     return ListTile(

@@ -104,12 +104,25 @@ class HttpApi {
   }
 
   String publicUrl(KurierFile file) {
-    final uri = _u('/public/${Uri.encodeComponent(file.name)}');
-    if (file.accessToken != null && file.accessTokenExpiresAt != null) {
-      return uri.replace(queryParameters: {
-        'accessToken': file.accessToken!,
-        'expires': '${file.accessTokenExpiresAt}',
-      }).toString();
+    final name = file.name.trim();
+    if (name.isEmpty) return '';
+    Uri uri;
+    if (name.startsWith('http://') || name.startsWith('https://')) {
+      uri = Uri.parse(name);
+    } else {
+      final path = name.startsWith('/') ? name : '/public/$name';
+      uri = Uri.parse(origin).replace(path: path);
+    }
+    final token = file.accessToken?.trim();
+    if (token != null && token.isNotEmpty) {
+      return uri.replace(
+        queryParameters: {
+          ...uri.queryParameters,
+          'accessToken': token,
+          if (file.accessTokenExpiresAt != null)
+            'expires': '${file.accessTokenExpiresAt}',
+        },
+      ).toString();
     }
     return uri.toString();
   }

@@ -39,9 +39,11 @@ class UserAvatar extends StatelessWidget {
   Widget build(BuildContext context) {
     final p = context.p;
     final override = imageUrl?.trim();
-    final url = (override != null && override.isNotEmpty)
+    var url = (override != null && override.isNotEmpty)
         ? override
         : (user?.avatar != null ? session.fileUrl(user!.avatar!) : null);
+    if (url != null && url.trim().isEmpty) url = null;
+    final fill = profileBannerColor(user?.profileColor ?? '');
     Color status;
     switch (user?.status) {
       case 'online':
@@ -103,14 +105,18 @@ class UserAvatar extends StatelessWidget {
           ClipRRect(
             borderRadius: BorderRadius.circular(size / 2),
             child: url != null
-                ? Image.network(
-                    url,
-                    width: size,
-                    height: size,
-                    fit: BoxFit.cover,
-                    errorBuilder: (_, _, _) => _fallback(p),
+                ? ColoredBox(
+                    color: fill,
+                    child: Image.network(
+                      url,
+                      width: size,
+                      height: size,
+                      fit: BoxFit.cover,
+                      gaplessPlayback: true,
+                      errorBuilder: (_, _, _) => _fallback(fill),
+                    ),
                   )
-                : _fallback(p),
+                : _fallback(fill),
           ),
           if (showStatus)
             Positioned(
@@ -134,7 +140,7 @@ class UserAvatar extends StatelessWidget {
     );
   }
 
-  Widget _fallback(Palette p) {
+  Widget _fallback([Color? fill]) {
     final fromUser = user?.displayName;
     final fromFallback = fallbackName?.trim();
     final letter =
@@ -144,21 +150,10 @@ class UserAvatar extends StatelessWidget {
                       ? fromFallback[0]
                       : '?'))
             .toUpperCase();
-    Color color;
-    try {
-      color = Color(
-        int.parse(
-          (user?.profileColor ?? '#5865F2').replaceFirst('#', 'FF'),
-          radix: 16,
-        ),
-      );
-    } catch (_) {
-      color = const Color(0xFF5865F2);
-    }
     return Container(
       width: size,
       height: size,
-      color: color,
+      color: fill ?? profileBannerColor(user?.profileColor ?? ''),
       alignment: Alignment.center,
       child: Text(
         letter,
@@ -173,6 +168,23 @@ class UserAvatar extends StatelessWidget {
 }
 
 const kVoiceLive = Color(0xFF23A55A);
+
+class VoiceStatusText extends StatelessWidget {
+  const VoiceStatusText(this.status, {super.key, this.fontSize = 12});
+
+  final String status;
+  final double fontSize;
+
+  @override
+  Widget build(BuildContext context) {
+    return Text(
+      status,
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      style: TextStyle(color: context.p.faint, fontSize: fontSize, height: 1.2),
+    );
+  }
+}
 
 String formatElapsed(int startedAtMs, [int? nowMs]) {
   final now = nowMs ?? DateTime.now().millisecondsSinceEpoch;
@@ -607,6 +619,24 @@ Color? parseHexColor(String? hex) {
   } catch (_) {
     return null;
   }
+}
+
+/// Banner / avatar fallback fill. White is the server/role "unset" sentinel
+/// and reads as a broken image on a dark profile card, so it falls back to
+/// Sharkord's default `#262626`.
+Color profileBannerColor(String hex) {
+  var h = hex.trim().replaceFirst('#', '');
+  if (h.length == 3) {
+    h = '${h[0]}${h[0]}${h[1]}${h[1]}${h[2]}${h[2]}';
+  }
+  if (h.length == 6) h = 'FF$h';
+  if (h.length == 8) {
+    try {
+      final n = int.parse(h, radix: 16);
+      if ((n & 0x00FFFFFF) != 0x00FFFFFF) return Color(n);
+    } catch (_) {}
+  }
+  return const Color(0xFF262626);
 }
 
 int _compareRoleRank(KurierRole a, KurierRole b) {

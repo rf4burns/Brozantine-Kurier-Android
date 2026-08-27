@@ -3,6 +3,8 @@ import 'dart:convert';
 
 import 'package:web_socket_channel/web_socket_channel.dart';
 
+import 'permissions.dart';
+
 /// tRPC v11 keepAlive uses raw `PING` / `PONG` text frames (not JSON).
 String? keepAliveReply(String raw) {
   if (raw == 'PING') return 'PONG';
@@ -30,11 +32,25 @@ class TrpcException implements Exception {
   String toString() => message;
 }
 
+bool isPermissionError(Object error) {
+  if (error is TrpcException) {
+    final code = (error.code ?? '').toUpperCase();
+    if (code == 'FORBIDDEN' || code == 'UNAUTHORIZED') return true;
+  }
+  final text = '$error'.toLowerCase();
+  if (text == missingPermissionKey.toLowerCase()) return true;
+  return text.contains('forbidden') ||
+      text.contains('not allowed') ||
+      text.contains('permission denied') ||
+      text.contains("don't have permission") ||
+      text.contains('do not have permission') ||
+      text.contains('missing permission') ||
+      text.contains('no permission') ||
+      text.contains('insufficient permission');
+}
+
 class TrpcClient {
-  TrpcClient({
-    required this.url,
-    required this.connectionParams,
-  });
+  TrpcClient({required this.url, required this.connectionParams});
 
   final Uri url;
   final Map<String, dynamic> Function() connectionParams;
@@ -67,10 +83,7 @@ class TrpcClient {
     );
     await _channel!.ready;
     _opened = true;
-    _send({
-      'method': 'connectionParams',
-      'data': connectionParams(),
-    });
+    _send({'method': 'connectionParams', 'data': connectionParams()});
     _ping?.cancel();
     _ping = Timer.periodic(const Duration(seconds: 30), (_) {
       _channel?.sink.add('PING');
@@ -90,10 +103,7 @@ class TrpcClient {
     final id = _nextId++;
     final controller = StreamController<dynamic>.broadcast(
       onCancel: () {
-        _send({
-          'id': id,
-          'method': 'subscription.stop',
-        });
+        _send({'id': id, 'method': 'subscription.stop'});
         _subs.remove(id);
       },
     );
@@ -101,10 +111,7 @@ class TrpcClient {
     _send({
       'id': id,
       'method': 'subscription',
-      'params': {
-        'path': path,
-        if (input != null) 'input': input,
-      },
+      'params': {'path': path, if (input != null) 'input': input},
     });
     return controller.stream;
   }
@@ -117,10 +124,7 @@ class TrpcClient {
     _send({
       'id': id,
       'method': method,
-      'params': {
-        'path': path,
-        if (input != null) 'input': input,
-      },
+      'params': {'path': path, if (input != null) 'input': input},
     });
     return completer.future.timeout(
       const Duration(seconds: 30),

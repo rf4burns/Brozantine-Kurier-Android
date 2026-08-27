@@ -306,6 +306,10 @@ class _Phone extends StatelessWidget {
           if (v > 240) onCloseMembers();
           return;
         }
+        if (overlayAsHome && s.showingDms) {
+          if (v > 240) s.returnToLastTextChannel();
+          return;
+        }
         if (channelsOpen && !overlayAsHome) {
           if (v < -240) onCloseChannels();
           return;
@@ -780,12 +784,14 @@ class ChannelSidebar extends StatelessWidget {
     bool unreadBold = true,
     Widget? trailing,
     Color? accent,
+    String? subtitle,
   }) {
     final color =
         accent ??
         (selected || (unread > 0 && unreadBold)
             ? context.p.foreground
             : context.p.muted);
+    final status = subtitle?.trim();
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: kChannelRowGap),
       child: Material(
@@ -804,17 +810,24 @@ class ChannelSidebar extends StatelessWidget {
                 leading,
                 const SizedBox(width: 8),
                 Expanded(
-                  child: Text(
-                    label,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      color: color,
-                      fontWeight: unread > 0
-                          ? FontWeight.w600
-                          : FontWeight.w500,
-                      fontSize: 15,
-                      height: 1.2,
-                    ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        label,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: color,
+                          fontWeight: unread > 0
+                              ? FontWeight.w600
+                              : FontWeight.w500,
+                          fontSize: 15,
+                          height: 1.2,
+                        ),
+                      ),
+                      if (status != null && status.isNotEmpty)
+                        VoiceStatusText(status),
+                    ],
                   ),
                 ),
                 if (trailing != null) trailing,
@@ -908,7 +921,9 @@ class ChannelSidebar extends StatelessWidget {
                 icon: Icons.edit_outlined,
                 label: l('voiceStatus'),
                 onTap: () async {
-                  final ctrl = TextEditingController(text: c.voiceStatus ?? '');
+                  final ctrl = TextEditingController(
+                    text: c.displayedVoiceStatus ?? '',
+                  );
                   final ok = await showDialog<bool>(
                     context: context,
                     builder: (ctx) => AlertDialog(
@@ -938,43 +953,30 @@ class ChannelSidebar extends StatelessWidget {
                 onTap: () => s.deleteChannel(c.id),
               ),
           ],
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              _row(
-                context,
-                selected: selected,
-                onTap: () => _pick(s, c.id),
-                accent: liveColor,
-                leading: occupied
-                    ? VoiceWaveform(
-                        size: kChannelIcon,
-                        color: liveColor ?? context.p.muted,
-                        screenSharing: sharing && (connected || selected),
-                      )
-                    : Icon(
-                        Icons.volume_up,
-                        size: kChannelIcon,
-                        color: liveColor ?? context.p.muted,
-                      ),
-                label: c.name,
-                trailing: since != null && since > 0
-                    ? ElapsedTime(
-                        startedAt: since,
-                        style: const TextStyle(color: kVoiceLive, fontSize: 10),
-                      )
-                    : null,
-              ),
-              if (c.voiceStatus != null && c.voiceStatus!.isNotEmpty)
-                Padding(
-                  padding: const EdgeInsets.only(left: 36, bottom: 2),
-                  child: Text(
-                    c.voiceStatus!,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(color: context.p.faint, fontSize: 11),
+          child: _row(
+            context,
+            selected: selected,
+            onTap: () => _pick(s, c.id),
+            accent: liveColor,
+            leading: occupied
+                ? VoiceWaveform(
+                    size: kChannelIcon,
+                    color: liveColor ?? context.p.muted,
+                    screenSharing: sharing && (connected || selected),
+                  )
+                : Icon(
+                    Icons.volume_up,
+                    size: kChannelIcon,
+                    color: liveColor ?? context.p.muted,
                   ),
-                ),
-            ],
+            label: c.name,
+            subtitle: c.displayedVoiceStatus,
+            trailing: since != null && since > 0
+                ? ElapsedTime(
+                    startedAt: since,
+                    style: const TextStyle(color: kVoiceLive, fontSize: 10),
+                  )
+                : null,
           ),
         ),
         if (occupied)

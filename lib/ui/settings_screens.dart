@@ -997,7 +997,11 @@ class _ChannelSettingsState extends State<ChannelSettings> {
     super.initState();
     final ch = widget.session.channels[widget.session.settingsChannelId];
     name = TextEditingController(text: ch?.name ?? '');
-    topic = TextEditingController(text: ch?.topic ?? '');
+    topic = TextEditingController(
+      text: ch?.isVoice == true
+          ? (ch?.displayedVoiceStatus ?? '')
+          : (ch?.topic ?? ''),
+    );
   }
 
   @override
@@ -1045,7 +1049,7 @@ class _ChannelSettingsState extends State<ChannelSettings> {
                   child: KurierField(controller: name),
                 ),
                 SettingsGroup(
-                  label: l('topic'),
+                  label: ch?.isVoice == true ? l('voiceStatus') : l('topic'),
                   child: KurierField(controller: topic),
                 ),
                 SettingsActions(

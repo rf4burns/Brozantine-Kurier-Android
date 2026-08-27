@@ -111,13 +111,30 @@ class _VoiceStageState extends State<VoiceStage> {
                 Icon(Icons.volume_up, color: context.p.muted, size: 20),
                 const SizedBox(width: 8),
                 Expanded(
-                  child: Text(
-                    channel.name,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      color: context.p.foreground,
-                      fontWeight: FontWeight.w600,
-                    ),
+                  child: Row(
+                    children: [
+                      Flexible(
+                        child: Text(
+                          channel.name,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: context.p.foreground,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                      if (channel.displayedVoiceStatus != null) ...[
+                        Container(
+                          width: 1,
+                          height: 16,
+                          margin: const EdgeInsets.symmetric(horizontal: 8),
+                          color: context.p.divider,
+                        ),
+                        Flexible(
+                          child: VoiceStatusText(channel.displayedVoiceStatus!),
+                        ),
+                      ],
+                    ],
                   ),
                 ),
                 if (s.hasMusicBot)
@@ -277,7 +294,6 @@ class _VoiceStageState extends State<VoiceStage> {
         color: context.p.card,
         borderRadius: BorderRadius.circular(12),
       ),
-      clipBehavior: Clip.antiAlias,
       child: Stack(
         fit: StackFit.expand,
         children: [
@@ -325,6 +341,7 @@ class _VoiceStageState extends State<VoiceStage> {
     final user = s.users[userId];
     final own = userId == s.ownUserId;
     final watching = own || s.isWatchingStream(userId);
+    final canWatch = !own && s.canWatchStream(userId);
     final l = L10n.of(context);
     final key = StreamKind.watchKey(userId, external: false);
     return _watchableCard(
@@ -340,6 +357,7 @@ class _VoiceStageState extends State<VoiceStage> {
       placeholder: UserAvatar(user: user, session: s, size: 72),
       label: l('userScreen', {'name': user?.displayName ?? ''}),
       onWatch: own ? null : () => s.watchStream(userId),
+      canWatch: canWatch,
       onStop: own
           ? null
           : () {
@@ -362,6 +380,7 @@ class _VoiceStageState extends State<VoiceStage> {
   }) {
     final s = session;
     final watching = s.isWatchingStream(stream.streamId, external: true);
+    final canWatch = s.canWatchStream(stream.streamId, external: true);
     final key = StreamKind.watchKey(stream.streamId, external: true);
     return _watchableCard(
       context,
@@ -387,6 +406,7 @@ class _VoiceStageState extends State<VoiceStage> {
           : Icon(Icons.router, size: 48, color: context.p.muted),
       label: stream.title,
       onWatch: () => s.watchStream(stream.streamId, external: true),
+      canWatch: canWatch,
       onStop: () {
         _clearFocusIf(key);
         s.stopWatching(stream.streamId, external: true);
@@ -409,6 +429,7 @@ class _VoiceStageState extends State<VoiceStage> {
     required Widget placeholder,
     required String label,
     required VoidCallback? onWatch,
+    bool canWatch = false,
     required VoidCallback? onStop,
     required VoidCallback? onToggleFullscreen,
     required String muteKind,
@@ -431,7 +452,6 @@ class _VoiceStageState extends State<VoiceStage> {
         color: context.p.card,
         borderRadius: BorderRadius.circular(12),
       ),
-      clipBehavior: Clip.antiAlias,
       child: Stack(
         fit: StackFit.expand,
         children: [
@@ -483,14 +503,19 @@ class _VoiceStageState extends State<VoiceStage> {
           ),
           if (!watching && onWatch != null)
             Center(
-              child: FilledButton(
-                key: watchKey,
-                onPressed: onWatch,
-                style: FilledButton.styleFrom(
-                  backgroundColor: context.k.accent,
-                  foregroundColor: Colors.white,
+              child: Tooltip(
+                message: canWatch ? l('watchStream') : l('missingPermission'),
+                child: FilledButton(
+                  key: watchKey,
+                  onPressed: onWatch,
+                  style: FilledButton.styleFrom(
+                    backgroundColor: context.k.accent,
+                    foregroundColor: Colors.white,
+                    disabledBackgroundColor: context.p.card,
+                    disabledForegroundColor: context.p.muted,
+                  ),
+                  child: Text(l('watchStream')),
                 ),
-                child: Text(l('watchStream')),
               ),
             ),
           if (watching)
@@ -645,7 +670,10 @@ class _VoiceStageState extends State<VoiceStage> {
                 s.webcam ? Icons.videocam : Icons.videocam_off,
                 color: context.p.foreground,
               ),
-              onPressed: s.can(Permission.enableWebcam) ? s.toggleWebcam : null,
+              tooltip: s.canEnableWebcam() || s.webcam
+                  ? null
+                  : l('missingPermission'),
+              onPressed: s.toggleWebcam,
             ),
             IconButton(
               icon: Icon(
@@ -745,9 +773,10 @@ class _VoiceStageState extends State<VoiceStage> {
               _VoiceRoundButton(
                 key: const ValueKey('voice-ctrl-cam'),
                 icon: s.webcam ? Icons.videocam : Icons.videocam_off,
-                onPressed: s.can(Permission.enableWebcam)
-                    ? s.toggleWebcam
-                    : null,
+                onPressed: s.toggleWebcam,
+                tooltip: s.canEnableWebcam() || s.webcam
+                    ? null
+                    : l('missingPermission'),
               ),
               _VoiceRoundButton(
                 key: const ValueKey('voice-ctrl-share'),
@@ -947,13 +976,10 @@ class VoiceControlBar extends StatelessWidget {
         statusIcon = Icons.wifi;
     }
     final rtt = s.voiceRttMs;
-    final canCam =
-        s.can(Permission.enableWebcam) &&
-        (id == null || s.canChannel(id, ChannelPermission.webcam));
-    final canShare =
-        !PlatformBridge.isIos &&
-        PlatformBridge.canShareScreen &&
-        (id == null || s.canChannel(id, ChannelPermission.shareScreen));
+    final showShare = !PlatformBridge.isIos && PlatformBridge.canShareScreen;
+    final voiceErrorText = s.voiceError == missingPermissionKey
+        ? l('missingPermission')
+        : s.voiceError;
     return Container(
       decoration: BoxDecoration(
         color: context.p.card.withValues(alpha: 0.3),
@@ -1035,16 +1061,24 @@ class VoiceControlBar extends StatelessWidget {
                 ),
                 const SizedBox(width: 8),
                 _VoiceMediaButton(
-                  tooltip: s.webcam ? l('cameraOff') : l('cameraOn'),
+                  tooltip: s.webcam
+                      ? l('cameraOff')
+                      : (s.canEnableWebcam()
+                            ? l('cameraOn')
+                            : l('missingPermission')),
                   icon: s.webcam ? Icons.videocam : Icons.videocam_off,
                   active: s.webcam,
                   activeColor: const Color(0xFF4ADE80),
-                  onPressed: canCam ? () => s.toggleWebcam() : null,
+                  onPressed: () => s.toggleWebcam(),
                 ),
-                if (canShare) ...[
+                if (showShare) ...[
                   const SizedBox(width: 4),
                   _VoiceMediaButton(
-                    tooltip: s.sharing ? l('stopShare') : l('shareScreen'),
+                    tooltip: s.sharing
+                        ? l('stopShare')
+                        : (s.canShareScreen()
+                              ? l('shareScreen')
+                              : l('missingPermission')),
                     icon: s.sharing
                         ? Icons.stop_screen_share
                         : Icons.screen_share,
@@ -1056,11 +1090,11 @@ class VoiceControlBar extends StatelessWidget {
               ],
             ),
           ),
-          if (s.voiceError != null)
+          if (voiceErrorText != null)
             Padding(
               padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
               child: Text(
-                s.voiceError!,
+                voiceErrorText,
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
                 style: TextStyle(color: context.p.dnd, fontSize: 10),

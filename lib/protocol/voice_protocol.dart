@@ -86,3 +86,20 @@ int speakingIntensityFromJson(Map<dynamic, dynamic> json) {
   if (value > 3) return 3;
   return value;
 }
+
+/// Body for `voice.produce`, including simulcast `qualityLayers` from appData.
+Map<String, dynamic> voiceProduceMutation({
+  required String transportId,
+  required Map<String, dynamic> body,
+}) {
+  final appData = body['appData'] is Map
+      ? Map<String, dynamic>.from(body['appData'] as Map)
+      : const <String, dynamic>{};
+  final layers = body['qualityLayers'] ?? appData['qualityLayers'];
+  return {
+    'transportId': transportId,
+    'kind': '${body['kind'] ?? appData['kind'] ?? ''}',
+    'rtpParameters': body['rtpParameters'] ?? const <String, dynamic>{},
+    if (layers is List && layers.isNotEmpty) 'qualityLayers': layers,
+  };
+}

@@ -9,6 +9,7 @@ import 'package:kurier_web/protocol/activity_log.dart';
 import 'package:kurier_web/protocol/config.dart';
 import 'package:kurier_web/protocol/mentions.dart';
 import 'package:kurier_web/protocol/models.dart';
+import 'package:kurier_web/protocol/http_api.dart';
 import 'package:kurier_web/protocol/permissions.dart';
 import 'package:kurier_web/protocol/search_query.dart';
 import 'package:kurier_web/protocol/trpc_client.dart';
@@ -188,6 +189,62 @@ void main() {
       );
     });
 
+    test('forwards simulcast qualityLayers on voice.produce', () {
+      final payload = voiceProduceMutation(
+        transportId: 't1',
+        body: {
+          'kind': 'screen',
+          'rtpParameters': {'codecs': []},
+          'appData': {
+            'kind': 'screen',
+            'qualityLayers': [
+              {'spatialLayer': 0, 'label': 'Low'},
+              {'spatialLayer': 1, 'label': 'Medium'},
+              {'spatialLayer': 2, 'label': 'High'},
+            ],
+          },
+        },
+      );
+      expect(payload['transportId'], 't1');
+      expect(payload['kind'], 'screen');
+      expect(payload['qualityLayers'], hasLength(3));
+      expect((payload['qualityLayers'] as List).first['label'], 'Low');
+    });
+
+    test('uses top-level qualityLayers when appData is missing', () {
+      final payload = voiceProduceMutation(
+        transportId: 't2',
+        body: {
+          'kind': 'video',
+          'rtpParameters': {'mid': '0'},
+          'qualityLayers': [
+            {'spatialLayer': 0, 'label': 'Low'},
+          ],
+        },
+      );
+      expect(payload['kind'], 'video');
+      expect(payload.containsKey('qualityLayers'), isTrue);
+    });
+
+    test('omits qualityLayers for a simple audio produce', () {
+      final payload = voiceProduceMutation(
+        transportId: 't3',
+        body: {
+          'kind': 'audio',
+          'rtpParameters': {'codecs': []},
+        },
+      );
+      expect(payload['kind'], 'audio');
+      expect(payload.containsKey('qualityLayers'), isFalse);
+    });
+
+    test('reads simulcast from public server settings', () {
+      final s = SessionController();
+      expect(s.simulcastEnabled, isFalse);
+      s.publicSettings['webRtcSimulcastEnabled'] = true;
+      expect(s.simulcastEnabled, isTrue);
+    });
+
     test('maps speaking meter keys to user ids', () {
       expect(speakingUserIdFromKey('local', 7), 7);
       expect(speakingUserIdFromKey('12:audio', 7), 12);
@@ -216,27 +273,111 @@ void main() {
       expect(StreamKind.isPlaybackStream(StreamKind.screen), isFalse);
     });
 
-    test('client-mutes music-bot audio until the user unmutes', () {
+    test('client-mutes playback streams until the user unmutes', () {
+      expect(StreamKind.startsClientMuted(StreamKind.externalAudio), isTrue);
+      expect(StreamKind.startsClientMuted(StreamKind.screenAudio), isTrue);
+      expect(StreamKind.startsClientMuted(StreamKind.audio), isFalse);
+      expect(StreamKind.startsClientMuted(StreamKind.video), isFalse);
+      expect(StreamKind.startsClientMuted(StreamKind.screen), isFalse);
+    });
+
+    test(
+      'allows watching a stream only in the connected voice channel',
+      () async {
+        final s = SessionController();
+        s.ownUserId = 1;
+        s.voiceMap[20] = {2: VoiceUserState(sharingScreen: true)};
+        s.externalStreams[20] = [
+          ExternalStream(
+            title: 'Music Bot',
+            key: 'music-bot',
+            pluginId: 'music-bot',
+            streamId: 9,
+          ),
+        ];
+        expect(s.canWatchStream(2), isFalse);
+        expect(s.canWatchStream(9, external: true), isFalse);
+
+        s.connectedVoiceChannelId = 20;
+        expect(s.canWatchStream(2), isFalse);
+
+        s.voiceState = 'connected';
+        expect(s.canWatchStream(2), isTrue);
+        expect(s.canWatchStream(3), isFalse);
+        expect(s.canWatchStream(9, external: true), isTrue);
+        expect(s.canWatchStream(8, external: true), isFalse);
+
+        s.connectedVoiceChannelId = 21;
+        expect(s.canWatchStream(2), isFalse);
+        expect(s.canWatchStream(9, external: true), isFalse);
+
+        s.connectedVoiceChannelId = null;
+        s.voiceState = 'idle';
+        await s.watchStream(2);
+        expect(s.watchingStreams, isEmpty);
+        expect(s.error, missingPermissionKey);
+      },
+    );
+
+    test('notifies when an action is blocked by permissions', () async {
+      final s = SessionController();
+      s.ownUserId = 1;
+      s.users[1] = KurierUser(id: 1, name: 'Ada', roleIds: const [2]);
+      s.roles[2] = KurierRole(
+        id: 2,
+        name: 'member',
+        color: '#fff',
+        position: 1,
+        hoist: false,
+        isDefault: true,
+        isPersistent: false,
+      );
+      s.channels[10] = KurierChannel(
+        id: 10,
+        type: 'TEXT',
+        name: 'general',
+        position: 0,
+      );
+      s.channels[20] = KurierChannel(
+        id: 20,
+        type: 'VOICE',
+        name: 'voice',
+        position: 1,
+      );
+      s.selectedChannelId = 10;
+
+      expect(s.canJoinVoiceChannel(20), isFalse);
+      expect(s.canSendInChannel(10), isFalse);
+      await s.joinVoice(20);
+      expect(s.voiceState, 'idle');
+      expect(s.error, missingPermissionKey);
+
+      s.clearError();
+      await s.sendMessage('hello');
+      expect(s.error, missingPermissionKey);
+      expect(s.messages[10], isNull);
+
+      s.connectedVoiceChannelId = 20;
+      s.voiceState = 'connected';
+      s.voiceMap[20] = {2: VoiceUserState(sharingScreen: true)};
+      await s.toggleWebcam();
+      expect(s.webcam, isFalse);
+      expect(s.error, missingPermissionKey);
+    });
+
+    test('detects permission errors from tRPC', () {
       expect(
-        StreamKind.startsClientMuted(StreamKind.externalAudio, watching: false),
+        isPermissionError(TrpcException('nope', code: 'FORBIDDEN')),
         isTrue,
       );
       expect(
-        StreamKind.startsClientMuted(StreamKind.externalAudio, watching: true),
+        isPermissionError(TrpcException('nope', code: 'UNAUTHORIZED')),
         isTrue,
       );
-      expect(
-        StreamKind.startsClientMuted(StreamKind.screenAudio, watching: false),
-        isTrue,
-      );
-      expect(
-        StreamKind.startsClientMuted(StreamKind.screenAudio, watching: true),
-        isFalse,
-      );
-      expect(
-        StreamKind.startsClientMuted(StreamKind.audio, watching: true),
-        isFalse,
-      );
+      expect(isPermissionError('You are not allowed to do that'), isTrue);
+      expect(isPermissionError('permission denied'), isTrue);
+      expect(isPermissionError(missingPermissionKey), isTrue);
+      expect(isPermissionError('transport failed'), isFalse);
     });
 
     test('auto-consumes voice and camera but not screen or external', () {
@@ -254,6 +395,63 @@ void main() {
       expect(StreamKind.isExternal(StreamKind.externalVideo), isTrue);
       expect(StreamKind.isExternal(StreamKind.externalAudio), isTrue);
       expect(StreamKind.isExternal(StreamKind.screen), isFalse);
+    });
+  });
+
+  group('voice channel status', () {
+    test('fromJson maps topic onto displayedVoiceStatus', () {
+      final c = KurierChannel.fromJson({
+        'id': 20,
+        'type': 'VOICE',
+        'name': 'public!!',
+        'position': 1,
+        'topic': 'Playing games',
+      });
+      expect(c.topic, 'Playing games');
+      expect(c.voiceStatus, 'Playing games');
+      expect(c.displayedVoiceStatus, 'Playing games');
+    });
+
+    test('fromJson prefers voiceStatus over topic', () {
+      final c = KurierChannel.fromJson({
+        'id': 20,
+        'type': 'VOICE',
+        'name': 'public!!',
+        'voiceStatus': 'Live',
+        'topic': 'Playing games',
+      });
+      expect(c.displayedVoiceStatus, 'Live');
+    });
+
+    test('fromJson accepts status alias', () {
+      final c = KurierChannel.fromJson({
+        'id': 20,
+        'type': 'VOICE',
+        'name': 'public!!',
+        'status': 'AFK',
+      });
+      expect(c.displayedVoiceStatus, 'AFK');
+    });
+
+    test('text channels do not display voice status', () {
+      final c = KurierChannel.fromJson({
+        'id': 10,
+        'type': 'TEXT',
+        'name': 'general',
+        'topic': 'rules',
+      });
+      expect(c.topic, 'rules');
+      expect(c.displayedVoiceStatus, isNull);
+    });
+
+    test('blank topic is not displayed', () {
+      final c = KurierChannel.fromJson({
+        'id': 20,
+        'type': 'VOICE',
+        'name': 'public!!',
+        'topic': '  ',
+      });
+      expect(c.displayedVoiceStatus, isNull);
     });
   });
 
@@ -553,6 +751,19 @@ void main() {
       expect(isImageMediaType('video'), isFalse);
     });
 
+    test('detects video and audio media types', () {
+      expect(isVideoMediaType('video'), isTrue);
+      expect(isVideoMediaType('video/mp4'), isTrue);
+      expect(isVideoMediaType('audio/mpeg'), isFalse);
+      expect(isAudioMediaType('audio'), isTrue);
+      expect(isAudioMediaType('audio/mpeg'), isTrue);
+      expect(isAudioMediaType('video/mp4'), isFalse);
+      expect(isVideoFileUrl('https://cdn.example/clip.mp4'), isTrue);
+      expect(isVideoFileUrl('https://cdn.example/clip.mp4?token=1'), isTrue);
+      expect(isAudioFileUrl('/public/track.mp3'), isTrue);
+      expect(isAudioFileUrl('https://cdn.example/photo.png'), isFalse);
+    });
+
     test('picks Discord provider accent from host', () {
       expect(
         embedAccentForUrl('https://youtu.be/yxo4j0DdnwY'),
@@ -637,6 +848,56 @@ void main() {
         isTrue,
       );
     });
+
+    test('hides attached video and audio links from message HTML', () {
+      final video = KurierFile(
+        id: 42,
+        name: 'abc.mp4',
+        originalName: 'SNEEDING_HAS_STARTED_1.mp4',
+        md5: '',
+        userId: 1,
+        size: 1,
+        mimeType: 'video/mp4',
+        extension: 'mp4',
+        createdAt: 0,
+      );
+      expect(
+        hideEmbeddedMediaUrlsInHtml(
+          '<p><a href="https://host/public/abc.mp4">SNEEDING_HAS_STARTED_1.mp4</a></p>',
+          [video],
+        ),
+        '<p></p>',
+      );
+      expect(
+        messageHtmlHasVisibleText(
+          hideEmbeddedMediaUrlsInHtml(
+            '<p>https://host/public/abc.mp4</p>',
+            [video],
+          ),
+        ),
+        isFalse,
+      );
+      expect(
+        hideEmbeddedMediaUrlsInHtml('<p>hello https://cdn.example/a.mp4</p>', [
+          video,
+        ]),
+        '<p>hello https://cdn.example/a.mp4</p>',
+      );
+      expect(
+        hideEmbeddedMediaUrlsInHtml(
+          '<p>https://cdn.example/track.mp3</p>',
+          const [],
+          [
+            {
+              'kind': 'media',
+              'url': 'https://cdn.example/track.mp3',
+              'mediaType': 'audio/mpeg',
+            },
+          ],
+        ),
+        '<p></p>',
+      );
+    });
   });
 
   group('roles', () {
@@ -696,6 +957,137 @@ void main() {
         }).roleIds,
         [11],
       );
+    });
+
+    test('parses signed file tokens without requiring expires together', () {
+      final file = KurierFile.fromJson({
+        'id': 9,
+        'name': 'pic.png',
+        '_accessToken': 'tok',
+      });
+      expect(file.accessToken, 'tok');
+      expect(file.accessTokenExpiresAt, isNull);
+      expect(
+        fileFromDynamic('pic.png')?.name,
+        'pic.png',
+      );
+      expect(fileFromDynamic({'name': ''}), isNull);
+    });
+
+    test('classifies video and audio from mime or extension', () {
+      KurierFile file({
+        String mime = '',
+        String ext = '',
+        String name = 'file.bin',
+        String original = '',
+      }) {
+        return KurierFile(
+          id: 1,
+          name: name,
+          originalName: original,
+          md5: '',
+          userId: 1,
+          size: 1,
+          mimeType: mime,
+          extension: ext,
+          createdAt: 0,
+        );
+      }
+
+      expect(file(mime: 'video/mp4').isVideo, isTrue);
+      expect(file(mime: 'audio/mpeg').isAudio, isTrue);
+      expect(file(ext: 'mp4').isVideo, isTrue);
+      expect(file(ext: '.MP3').isAudio, isTrue);
+      expect(file(mime: '', ext: '', original: 'clip.webm').isVideo, isTrue);
+      expect(file(mime: '', ext: '', name: 'song.flac').isAudio, isTrue);
+      expect(file(mime: 'image/png', ext: 'png').isVideo, isFalse);
+      expect(file(mime: 'application/pdf', ext: 'pdf').isAudio, isFalse);
+    });
+
+    test('keeps avatar and signed url across a partial user update', () {
+      final existing = KurierUser.fromJson({
+        'id': 2,
+        'name': 'Ruzie',
+        'profileColor': '#3BA55D',
+        'createdAt': 100,
+        'avatar': {
+          'id': 9,
+          'name': 'pic.png',
+          '_accessToken': 'tok',
+          '_accessTokenExpiresAt': 99,
+        },
+        'banner': {
+          'id': 10,
+          'name': 'banner.png',
+          '_accessToken': 'ban',
+          '_accessTokenExpiresAt': 99,
+        },
+      });
+      final updated = KurierUser.fromJson({
+        'id': 2,
+        'name': 'Ruzie',
+        'status': 'online',
+      }, existing: existing);
+      expect(updated.avatar?.name, 'pic.png');
+      expect(updated.avatar?.accessToken, 'tok');
+      expect(updated.banner?.name, 'banner.png');
+      expect(updated.profileColor, '#3BA55D');
+      expect(updated.createdAt, 100);
+
+      final unsigned = KurierUser.fromJson({
+        'id': 2,
+        'name': 'Ruzie',
+        'avatar': {'id': 9, 'name': 'pic.png'},
+      }, existing: existing);
+      expect(unsigned.avatar?.accessToken, 'tok');
+    });
+
+    test('clears avatar when the update explicitly sends null', () {
+      final existing = KurierUser.fromJson({
+        'id': 2,
+        'name': 'Ruzie',
+        'avatar': {'id': 9, 'name': 'pic.png'},
+      });
+      final updated = KurierUser.fromJson({
+        'id': 2,
+        'name': 'Ruzie',
+        'avatar': null,
+      }, existing: existing);
+      expect(updated.avatar, isNull);
+    });
+
+    test('builds public file urls with optional access tokens', () {
+      final api = HttpApi('https://host');
+      expect(
+        api.publicUrl(KurierFile.fromJson({'name': 'pic.png'})),
+        'https://host/public/pic.png',
+      );
+      expect(api.publicUrl(KurierFile.fromJson({'name': ''})), '');
+      expect(
+        api.publicUrl(
+          KurierFile.fromJson({
+            'name': 'pic.png',
+            '_accessToken': 'tok',
+            '_accessTokenExpiresAt': 99,
+          }),
+        ),
+        'https://host/public/pic.png?accessToken=tok&expires=99',
+      );
+      expect(
+        api.publicUrl(
+          KurierFile.fromJson({'name': 'pic.png', '_accessToken': 'tok'}),
+        ),
+        'https://host/public/pic.png?accessToken=tok',
+      );
+    });
+
+    test('treats white profile colour as unset', () {
+      expect(profileBannerColor('#ffffff'), const Color(0xFF262626));
+      expect(profileBannerColor('#FFFFFF'), const Color(0xFF262626));
+      expect(profileBannerColor('#fff'), const Color(0xFF262626));
+      expect(profileBannerColor(''), const Color(0xFF262626));
+      expect(profileBannerColor('#5865F2'), const Color(0xFF5865F2));
+      expect(profileBannerColor('3BA55D'), const Color(0xFF3BA55D));
     });
   });
 
@@ -1080,6 +1472,96 @@ void main() {
     test('returns null for an empty versions list', () {
       expect(latestMarketplaceVersion(const []), isNull);
       expect(latestMarketplaceVersion(null), isNull);
+    });
+  });
+
+  group('voice same-channel rejoin', () {
+    SessionController voiceSession() {
+      final s = SessionController();
+      s.ownUserId = 1;
+      s.users[1] = KurierUser(
+        id: 1,
+        name: 'Ada',
+        roleIds: const [AppConfig.ownerRoleId],
+      );
+      s.channels[10] = KurierChannel(
+        id: 10,
+        type: 'TEXT',
+        name: 'general',
+        position: 0,
+      );
+      s.channels[20] = KurierChannel(
+        id: 20,
+        type: 'VOICE',
+        name: 'General',
+        position: 1,
+      );
+      s.selectedChannelId = 20;
+      return s;
+    }
+
+    test(
+      'selecting the current voice channel joins when disconnected',
+      () async {
+        final s = voiceSession();
+        expect(s.voiceState, 'idle');
+        await s.selectChannel(20);
+        expect(s.voiceState, isNot('idle'));
+      },
+    );
+
+    test('selecting the current text channel does not join voice', () async {
+      final s = voiceSession();
+      s.selectedChannelId = 10;
+      await s.selectChannel(10);
+      expect(s.voiceState, 'idle');
+    });
+
+    test(
+      'selecting the current voice channel is a no-op when connected',
+      () async {
+        final s = voiceSession();
+        s.connectedVoiceChannelId = 20;
+        s.voiceState = 'connected';
+        await s.selectChannel(20);
+        expect(s.voiceState, 'connected');
+        expect(s.connectedVoiceChannelId, 20);
+      },
+    );
+
+    test('own voice.onLeave clears connected state', () {
+      final s = voiceSession();
+      s.connectedVoiceChannelId = 20;
+      s.voiceState = 'connected';
+      s.voiceMap[20] = {1: VoiceUserState(), 2: VoiceUserState()};
+      s.applyVoiceLeave({'channelId': 20, 'userId': 1});
+      expect(s.connectedVoiceChannelId, isNull);
+      expect(s.voiceState, 'idle');
+      expect(s.voiceMap[20]!.containsKey(1), isFalse);
+      expect(s.voiceMap[20]!.containsKey(2), isTrue);
+    });
+
+    test('other user voice.onLeave does not disconnect', () {
+      final s = voiceSession();
+      s.connectedVoiceChannelId = 20;
+      s.voiceState = 'connected';
+      s.voiceMap[20] = {1: VoiceUserState(), 2: VoiceUserState()};
+      s.applyVoiceLeave({'channelId': 20, 'userId': 2});
+      expect(s.connectedVoiceChannelId, 20);
+      expect(s.voiceState, 'connected');
+    });
+
+    test('own voice.onMoved to null clears connected state', () {
+      final s = voiceSession();
+      s.connectedVoiceChannelId = 20;
+      s.voiceState = 'connected';
+      s.applyVoiceMoved({
+        'userId': 1,
+        'fromChannelId': 20,
+        'toChannelId': null,
+      });
+      expect(s.connectedVoiceChannelId, isNull);
+      expect(s.voiceState, 'idle');
     });
   });
 }

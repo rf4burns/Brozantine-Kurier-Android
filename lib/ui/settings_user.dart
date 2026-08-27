@@ -567,13 +567,10 @@ class _DevicesSettingsTabState extends State<DevicesSettingsTab> {
           ),
         ),
         if (_previewing)
-          ClipRRect(
-            borderRadius: BorderRadius.circular(8),
-            child: SizedBox(
-              height: 180,
-              width: double.infinity,
-              child: mediaStreamView(mediaKey: 'preview:video'),
-            ),
+          SizedBox(
+            height: 180,
+            width: double.infinity,
+            child: mediaStreamView(mediaKey: 'preview:video'),
           ),
       ],
     );
