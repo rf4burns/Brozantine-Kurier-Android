@@ -1,0 +1,83 @@
+# Kurier Flutter web in front of the server on :4991.
+#
+# Copy build/web to the site root, then:
+#   caddy reload --config /path/to/Caddyfile
+#
+# Do not write into Kurier's {dataDir}/interface/{version}/ tree.
+# Caddy must win GET / so browsers never hit interfaceRouteHandler.
+#
+# GET / is always Flutter. /vanilla/ loads stock Kurier in-page
+# (Vite assets are root-absolute, so those JS/CSS files are proxied).
+# Refresh of / returns to Flutter. /vanilla/client is raw Kurier HTML.
+
+sharkord.brozantine.com {
+	encode gzip
+
+	@websocket {
+		header Connection *Upgrade*
+		header Upgrade websocket
+	}
+	handle @websocket {
+		reverse_proxy 127.0.0.1:4991
+	}
+
+	handle /login {
+		reverse_proxy 127.0.0.1:4991
+	}
+	handle /reset-password* {
+		reverse_proxy 127.0.0.1:4991
+	}
+	handle /upload* {
+		reverse_proxy 127.0.0.1:4991
+	}
+	handle /public* {
+		reverse_proxy 127.0.0.1:4991
+	}
+	handle /healthz {
+		reverse_proxy 127.0.0.1:4991
+	}
+	handle /info {
+		reverse_proxy 127.0.0.1:4991
+	}
+	handle /backup {
+		reverse_proxy 127.0.0.1:4991
+	}
+	handle /plugin-bundle* {
+		reverse_proxy 127.0.0.1:4991
+	}
+	handle /plugin-components* {
+		reverse_proxy 127.0.0.1:4991
+	}
+	handle /plugins* {
+		reverse_proxy 127.0.0.1:4991
+	}
+
+	@vite_bundle {
+		path_regexp vite_bundle ^/assets/[^/]+\.(js|css)$
+	}
+	handle @vite_bundle {
+		reverse_proxy 127.0.0.1:4991
+	}
+	handle /favicon.ico {
+		reverse_proxy 127.0.0.1:4991
+	}
+
+	handle /vanilla/client {
+		rewrite * /
+		reverse_proxy 127.0.0.1:4991
+	}
+
+	@vanilla_root {
+		path_regexp vanilla_root ^/vanilla/?$
+	}
+	handle @vanilla_root {
+		header Content-Type "text/html; charset=utf-8"
+		respond "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>Kurier</title><meta name=\"description\" content=\"Self-hosted messenger for small groups\"><meta property=\"og:type\" content=\"website\"><meta property=\"og:site_name\" content=\"Kurier\"><meta property=\"og:title\" content=\"Kurier\"><meta property=\"og:description\" content=\"Self-hosted messenger for small groups\"><meta property=\"og:image\" content=\"https://sharkord.brozantine.com/icons/Icon-512.png\"><meta property=\"og:url\" content=\"https://sharkord.brozantine.com/vanilla\"><meta name=\"twitter:card\" content=\"summary_large_image\"></head><body><script>(async()=>{const html=await(await fetch('/vanilla/client')).text();history.replaceState(null,'','/');document.open();document.write(html);document.close()})()</script></body></html>" 200
+	}
+
+	handle {
+		root * /var/www/brozantine
+		try_files {path} /index.html
+		file_server
+	}
+}

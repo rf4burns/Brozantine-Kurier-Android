@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base href="$FLUTTER_BASE_HREF">
+  <meta charset="UTF-8">
+  <meta content="IE=Edge" http-equiv="X-UA-Compatible">
+  <meta name="description" content="Kurier — self-hosted messenger">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover, user-scalable=no">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Kurier">
+  <meta name="theme-color" content="#1E1F22">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="Kurier">
+  <meta property="og:title" content="Kurier">
+  <meta property="og:description" content="Self-hosted messenger for small groups">
+  <meta property="og:image" content="https://sharkord.brozantine.com/icons/Icon-512.png">
+  <meta property="og:url" content="https://sharkord.brozantine.com/">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Kurier">
+  <meta name="twitter:description" content="Self-hosted messenger for small groups">
+  <meta name="twitter:image" content="https://sharkord.brozantine.com/icons/Icon-512.png">
+  <link rel="apple-touch-icon" href="icons/Icon-192.png">
+  <link rel="icon" type="image/png" href="favicon.png"/>
+  <title>Kurier</title>
+  <link rel="manifest" href="manifest.json">
+  <style>
+    html, body {
+      height: 100%;
+      margin: 0;
+      background: #1E1F22;
+      overscroll-behavior: none;
+      -webkit-text-size-adjust: 100%;
+      -webkit-tap-highlight-color: transparent;
+      -webkit-touch-callout: none;
+    }
+    #loading {
+      color: #B5BAC1;
+      font-family: system-ui, sans-serif;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+    }
+  </style>
+  <script type="module">
+    const urls = [
+      "https://esm.sh/mediasoup-client@3.18.3",
+      "https://cdn.jsdelivr.net/npm/mediasoup-client@3.18.3/+esm",
+    ];
+    for (const url of urls) {
+      try {
+        const mediasoup = await import(url);
+        const ns = mediasoup.Device ? mediasoup : (mediasoup.default || mediasoup);
+        if (ns && (ns.Device || (ns.default && ns.default.Device))) {
+          window.mediasoupClient = ns.Device ? ns : ns.default;
+          break;
+        }
+      } catch (err) {
+        console.warn("mediasoup-client load failed", url, err);
+      }
+    }
+  </script>
+  <script src="mediasoup_bridge.js"></script>
+</head>
+<body>
+  <div id="kurier-media-host" style="position:absolute;width:0;height:0;overflow:hidden"></div>
+  <div id="loading">Kurier</div>
+  <script src="flutter_bootstrap.js" async></script>
+</body>
+</html>
