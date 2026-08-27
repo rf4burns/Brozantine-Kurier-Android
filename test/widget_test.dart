@@ -76,6 +76,20 @@ SessionController _readySession({
   return s;
 }
 
+void _grantOwner(SessionController s) {
+  s.roles[AppConfig.ownerRoleId] = KurierRole(
+    id: AppConfig.ownerRoleId,
+    name: 'Owner',
+    color: '#FFD700',
+    position: 100,
+    hoist: true,
+    isDefault: false,
+    isPersistent: true,
+    permissions: Permission.all,
+  );
+  s.users[1] = s.users[1]!.copyWith(roleIds: [AppConfig.ownerRoleId]);
+}
+
 Widget _app(SessionController session) {
   return ProviderScope(
     overrides: [sessionProvider.overrideWith((ref) => session)],
@@ -719,6 +733,32 @@ void main() {
     expect(find.byType(Dialog), findsOneWidget);
   });
 
+  testWidgets('GIF picker asks for a KLIPY key off Brozantine hosts', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1280, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    SharedPreferences.setMockInitialValues({});
+    final s = _readySession(selectedChannelId: 10);
+    s.activeHost = 'example.com';
+    await s.store.load();
+
+    await tester.pumpWidget(_app(s));
+    await tester.pump();
+    await tester.tap(find.byIcon(Icons.gif_box_outlined));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(
+      find.text('Set a KLIPY API key in Settings to search GIFs'),
+      findsOneWidget,
+    );
+    expect(find.text('No GIFs found'), findsNothing);
+  });
+
   testWidgets('phone compose GIF opens the picker in a bottom sheet', (
     tester,
   ) async {
@@ -1076,6 +1116,7 @@ void main() {
     );
     s.voiceMap[20] = {2: VoiceUserState(sharingScreen: true)};
     s.connectedVoiceChannelId = 20;
+    s.voiceState = 'connected';
 
     await tester.pumpWidget(_app(s));
     await tester.pump();
@@ -1089,6 +1130,77 @@ void main() {
     expect(find.text('Watch Stream'), findsNothing);
     expect(s.watchingStreams.contains('2:screen'), isTrue);
     expect(find.byKey(const ValueKey('stop-watching-2')), findsOneWidget);
+  });
+
+  testWidgets('Watch Stream is disabled unless connected to that channel', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1280, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final s = _readySession(selectedChannelId: 20);
+    s.channels[20] = KurierChannel(
+      id: 20,
+      type: 'VOICE',
+      name: 'public!!',
+      position: 1,
+    );
+    s.voiceMap[20] = {2: VoiceUserState(sharingScreen: true)};
+
+    await tester.pumpWidget(_app(s));
+    await tester.pump();
+
+    expect(find.byKey(const ValueKey('watch-stream-2')), findsOneWidget);
+    expect(
+      tester
+          .widget<FilledButton>(find.byKey(const ValueKey('watch-stream-2')))
+          .onPressed,
+      isNotNull,
+    );
+
+    await tester.tap(find.byKey(const ValueKey('watch-stream-2')));
+    await tester.pump();
+    await tester.pump();
+    expect(s.watchingStreams.contains('2:screen'), isFalse);
+    expect(find.text("You don't have permission to do that."), findsOneWidget);
+
+    s.connectedVoiceChannelId = 21;
+    s.voiceState = 'connected';
+    s.notifyListeners();
+    await tester.pump();
+
+    await tester.tap(find.text('Watch Stream'));
+    await tester.pump();
+    await tester.pump();
+    expect(s.watchingStreams.contains('2:screen'), isFalse);
+    expect(find.text("You don't have permission to do that."), findsWidgets);
+  });
+
+  testWidgets('join voice without permission shows an error', (tester) async {
+    tester.view.physicalSize = const Size(1280, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final s = _readySession(selectedChannelId: 20);
+    s.channels[20] = KurierChannel(
+      id: 20,
+      type: 'VOICE',
+      name: 'public!!',
+      position: 1,
+    );
+
+    await tester.pumpWidget(_app(s));
+    await tester.pump();
+
+    await tester.tap(find.text('Join Voice'));
+    await tester.pump();
+    await tester.pump();
+    expect(s.voiceState, 'idle');
+    expect(s.connectedVoiceChannelId, isNull);
+    expect(find.text("You don't have permission to do that."), findsOneWidget);
   });
 
   testWidgets('watched stream can fill the occupant area and show stats', (
@@ -1111,6 +1223,7 @@ void main() {
       2: VoiceUserState(sharingScreen: true),
     };
     s.connectedVoiceChannelId = 20;
+    s.voiceState = 'connected';
 
     await tester.pumpWidget(_app(s));
     await tester.pump();
@@ -1169,6 +1282,7 @@ void main() {
       2: VoiceUserState(sharingScreen: true),
     };
     s.connectedVoiceChannelId = 20;
+    s.voiceState = 'connected';
 
     await tester.pumpWidget(_app(s));
     await tester.pump();
@@ -1217,6 +1331,7 @@ void main() {
       2: VoiceUserState(sharingScreen: true),
     };
     s.connectedVoiceChannelId = 20;
+    s.voiceState = 'connected';
 
     await tester.pumpWidget(_app(s));
     await tester.pump();
@@ -2898,6 +3013,91 @@ void main() {
     expect(find.byType(VoiceStage), findsOneWidget);
     expect(find.byType(CompactVoiceBar), findsNothing);
     expect(find.text('Transport Statistics'), findsNothing);
+  });
+
+  testWidgets('message context menu shows only permitted actions', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1280, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(_app(_readySession(selectedChannelId: 10)));
+    await tester.pump();
+    await tester.longPress(find.text('hello overlay'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Copy text'), findsOneWidget);
+    expect(find.text('Edit'), findsOneWidget);
+    expect(find.text('Delete message'), findsOneWidget);
+    expect(find.text('Reply'), findsNothing);
+    expect(find.text('Add reaction'), findsNothing);
+    expect(find.text('Pin message'), findsNothing);
+  });
+
+  testWidgets('owner message context menu groups reactions and actions', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1280, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final s = _readySession(selectedChannelId: 10);
+    _grantOwner(s);
+    await tester.pumpWidget(_app(s));
+    await tester.pump();
+    await tester.longPress(find.text('hello overlay'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Add reaction'), findsOneWidget);
+    expect(find.text('Edit'), findsOneWidget);
+    expect(find.text('Reply'), findsOneWidget);
+    expect(find.text('Reply in thread'), findsOneWidget);
+    expect(find.text('Pin message'), findsOneWidget);
+    expect(find.text('Copy text'), findsOneWidget);
+    expect(find.text('Delete message'), findsOneWidget);
+    expect(find.byKey(const ValueKey('menu-react-+1')), findsOneWidget);
+  });
+
+  testWidgets('phone message context menu is a compact card', (tester) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final s = _readySession(selectedChannelId: 10);
+    _grantOwner(s);
+    await tester.pumpWidget(_app(s));
+    await tester.pump();
+    await tester.longPress(find.text('hello overlay'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Add reaction'), findsOneWidget);
+    expect(find.text('Reply'), findsOneWidget);
+    expect(find.text('Delete message'), findsOneWidget);
+    expect(find.text('Close'), findsNothing);
+  });
+
+  testWidgets('channel context menu hides unpermitted manage actions', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(900, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(_app(_readySession(selectedChannelId: 10)));
+    await tester.pump();
+    await tester.longPress(find.text('general').first);
+    await tester.pumpAndSettle();
+
+    expect(find.text('All messages'), findsOneWidget);
+    expect(find.text('Mentions only'), findsOneWidget);
+    expect(find.text('Mute'), findsOneWidget);
+    expect(find.text('Channel settings'), findsNothing);
+    expect(find.text('Delete'), findsNothing);
   });
 
   test('web client defaults automatic gain control off', () {

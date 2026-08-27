@@ -8,7 +8,6 @@ import 'package:url_launcher/url_launcher.dart';
 import '../app/breakpoints.dart';
 import '../app/l10n.dart';
 import '../app/theme.dart';
-import '../core/emoji_codec.dart';
 import '../core/quick_reactions.dart';
 import '../protocol/config.dart';
 import '../protocol/mentions.dart';
@@ -769,65 +768,160 @@ class MessageTile extends StatelessWidget {
       ),
     );
     if (readOnly) return surface;
-    return ContextRegion(actions: () => _actions(context, l), child: surface);
+    final canReact = session.can(Permission.reactToMessages);
+    return ContextRegion(
+      header: canReact ? _quickReactionHeader : null,
+      actions: () => _actions(context, l),
+      child: surface,
+    );
+  }
+
+  Widget _quickReactionHeader(BuildContext context, VoidCallback close) {
+    final s = session;
+    final custom = s.customEmojis;
+    final touch = breakpointOf(MediaQuery.sizeOf(context).width) !=
+        Breakpoint.desktop;
+    final height = touch ? minTap : 36.0;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(2, 2, 2, 6),
+      child: Row(
+        children: [
+          for (final e in QuickReactions.top(count: 4))
+            Expanded(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 2),
+                child: Material(
+                  color: context.p.card,
+                  borderRadius: BorderRadius.circular(8),
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(8),
+                    onTap: () {
+                      close();
+                      s.toggleReaction(message.id, e);
+                    },
+                    child: SizedBox(
+                      height: height,
+                      child: Center(
+                        child: EmojiGlyph(
+                          key: ValueKey('menu-react-$e'),
+                          emojiKey: e,
+                          customEmojis: custom,
+                          size: 20,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
   }
 
   List<MenuAction> _actions(BuildContext context, L10n l) {
     final s = session;
-    return [
-      MenuAction(
-        label: l('reply'),
-        onTap: () {
-          s.replyTo = message;
-          s.refresh();
-        },
-      ),
-      MenuAction(label: l('replyInThread'), onTap: () => s.openThread(message)),
-      for (final e in QuickReactions.top(count: 4))
-        MenuAction(
-          label: EmojiCodec.displayLabel(e),
-          onTap: () => s.toggleReaction(message.id, e),
-        ),
-      MenuAction(label: l('addReaction'), onTap: () => _pickEmoji(context)),
-      if (message.reactions.isNotEmpty)
-        MenuAction(
-          label: l('viewReactions'),
-          onTap: () => showReactionsViewer(
-            context,
-            session: s,
-            channelId: message.channelId,
-            messageId: message.id,
+    final canReact = s.can(Permission.reactToMessages);
+    final canSend = s.canSendInChannel(message.channelId);
+    final canEdit = message.userId == s.ownUserId && message.editable;
+    final canPin = s.can(Permission.pinMessages);
+    final canDelete =
+        message.userId == s.ownUserId || s.can(Permission.manageMessages);
+
+    final groups = <List<MenuAction>>[
+      if (canReact)
+        [
+          MenuAction(
+            label: l('addReaction'),
+            icon: Icons.add_reaction_outlined,
+            submenu: true,
+            onTap: () => _pickEmoji(context),
           ),
+        ],
+      [
+        if (canEdit)
+          MenuAction(
+            label: l('edit'),
+            icon: Icons.edit_outlined,
+            onTap: () => _edit(context),
+          ),
+        if (canSend) ...[
+          MenuAction(
+            label: l('reply'),
+            icon: Icons.reply,
+            onTap: () {
+              s.replyTo = message;
+              s.refresh();
+            },
+          ),
+          MenuAction(
+            label: l('replyInThread'),
+            icon: Icons.forum_outlined,
+            onTap: () => s.openThread(message),
+          ),
+        ],
+        if (canPin)
+          MenuAction(
+            label: message.pinned ? l('unpin') : l('pin'),
+            icon: Icons.push_pin_outlined,
+            onTap: () => s.togglePin(message.id),
+          ),
+      ],
+      [
+        MenuAction(
+          label: l('copyText'),
+          icon: Icons.content_copy,
+          onTap: () =>
+              PlatformBridge.copyText(htmlToPlainText(message.content ?? '')),
         ),
-      MenuAction(
-        label: message.pinned ? l('unpin') : l('pin'),
-        enabled: s.can(Permission.pinMessages),
-        onTap: () => s.togglePin(message.id),
-      ),
-      MenuAction(
-        label: l('copyText'),
-        onTap: () =>
-            PlatformBridge.copyText(htmlToPlainText(message.content ?? '')),
-      ),
-      MenuAction(
-        label: l('edit'),
-        enabled: message.userId == s.ownUserId && message.editable,
-        onTap: () => _edit(context),
-      ),
-      MenuAction(
-        label: l('deleteMessage'),
-        danger: true,
-        enabled:
-            message.userId == s.ownUserId || s.can(Permission.manageMessages),
-        onTap: () => s.deleteMessage(message.id),
-      ),
+        if (message.reactions.isNotEmpty)
+          MenuAction(
+            label: l('viewReactions'),
+            icon: Icons.emoji_emotions_outlined,
+            onTap: () => showReactionsViewer(
+              context,
+              session: s,
+              channelId: message.channelId,
+              messageId: message.id,
+            ),
+          ),
+      ],
+      if (canDelete)
+        [
+          MenuAction(
+            label: l('deleteMessage'),
+            icon: Icons.delete_outline,
+            danger: true,
+            onTap: () => s.deleteMessage(message.id),
+          ),
+        ],
     ];
+
+    final out = <MenuAction>[];
+    for (final group in groups) {
+      if (group.isEmpty) continue;
+      for (var i = 0; i < group.length; i++) {
+        final a = group[i];
+        out.add(
+          MenuAction(
+            label: a.label,
+            onTap: a.onTap,
+            icon: a.icon,
+            danger: a.danger,
+            submenu: a.submenu,
+            dividerBefore: out.isNotEmpty && i == 0,
+          ),
+        );
+      }
+    }
+    return out;
   }
 
   Widget? _hoverReactBar(BuildContext context, SessionController s) {
     if (breakpointOf(MediaQuery.sizeOf(context).width) == Breakpoint.phone) {
       return null;
     }
+    if (!s.can(Permission.reactToMessages)) return null;
     final custom = s.customEmojis;
     return Material(
       color: context.p.sidebar,

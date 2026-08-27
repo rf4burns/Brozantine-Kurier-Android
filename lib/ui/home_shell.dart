@@ -27,6 +27,7 @@ class HomeShell extends ConsumerStatefulWidget {
 class _HomeShellState extends ConsumerState<HomeShell> {
   bool _channelsOpen = false;
   bool _membersSheet = false;
+  int _shownErrorEpoch = -1;
 
   @override
   Widget build(BuildContext context) {
@@ -36,6 +37,21 @@ class _HomeShellState extends ConsumerState<HomeShell> {
     final channel = s.selectedChannelId != null
         ? s.channels[s.selectedChannelId!]
         : null;
+    final err = s.error;
+    if (err != null && err.isNotEmpty && s.errorEpoch != _shownErrorEpoch) {
+      _shownErrorEpoch = s.errorEpoch;
+      final message = err == missingPermissionKey
+          ? L10n.of(context)('missingPermission')
+          : err;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        final messenger = ScaffoldMessenger.maybeOf(context);
+        if (messenger == null) return;
+        messenger.hideCurrentSnackBar();
+        messenger.showSnackBar(SnackBar(content: Text(message)));
+        s.clearError();
+      });
+    }
 
     Widget body;
     switch (bp) {
@@ -122,7 +138,10 @@ class _Desktop extends StatelessWidget {
               s.setMembersWidth(live.members - dx);
             },
           ),
-          SizedBox(width: fitted.members, child: MemberList(session: s)),
+          SizedBox(
+            width: fitted.members,
+            child: MemberList(session: s),
+          ),
         ],
       ],
     );
@@ -177,8 +196,9 @@ class _Tablet extends StatelessWidget {
       membersWidth: s.membersWidth,
       showMembers: false,
     );
-    final membersW =
-        s.membersWidth.clamp(kSidebarMinWidth, kSidebarMaxWidth).toDouble();
+    final membersW = s.membersWidth
+        .clamp(kSidebarMinWidth, kSidebarMaxWidth)
+        .toDouble();
     return Stack(
       children: [
         Row(
@@ -218,7 +238,10 @@ class _Tablet extends StatelessWidget {
                   key: PanelResizeHandle.membersKey,
                   onDrag: (dx) => s.setMembersWidth(s.membersWidth - dx),
                 ),
-                SizedBox(width: membersW, child: MemberList(session: s)),
+                SizedBox(
+                  width: membersW,
+                  child: MemberList(session: s),
+                ),
               ],
             ),
           ),
@@ -332,7 +355,10 @@ class _Phone extends StatelessWidget {
               top: 0,
               right: 0,
               bottom: 0,
-              width: (MediaQuery.sizeOf(context).width * 0.86).clamp(240.0, 320.0),
+              width: (MediaQuery.sizeOf(context).width * 0.86).clamp(
+                240.0,
+                320.0,
+              ),
               child: MemberList(session: s),
             ),
           ],
@@ -411,6 +437,7 @@ class ServerRail extends StatelessWidget {
               },
               actions: () => [
                 MenuAction(
+                  icon: Icons.remove_circle_outline,
                   label: l('removeServer'),
                   danger: true,
                   onTap: () => s.removeHost(h.host),
@@ -457,7 +484,10 @@ class ServerRail extends StatelessWidget {
       );
     }
     return Center(
-      child: Text(letter, style: const TextStyle(color: Colors.white, fontSize: 18)),
+      child: Text(
+        letter,
+        style: const TextStyle(color: Colors.white, fontSize: 18),
+      ),
     );
   }
 
@@ -578,7 +608,9 @@ class ChannelSidebar extends StatelessWidget {
                         children: [
                           _categoryHeader(context, s, cat, l),
                           if (!collapsed)
-                            ...s.visibleChannelsIn(cat.id).map(
+                            ...s
+                                .visibleChannelsIn(cat.id)
+                                .map(
                                   (c) => c.isVoice
                                       ? _voiceTile(context, s, c, l)
                                       : _textTile(context, s, c, l),
@@ -586,7 +618,9 @@ class ChannelSidebar extends StatelessWidget {
                         ],
                       );
                     }),
-                    ...s.visibleChannelsIn(null).map(
+                    ...s
+                        .visibleChannelsIn(null)
+                        .map(
                           (c) => c.isVoice
                               ? _voiceTile(context, s, c, l)
                               : _textTile(context, s, c, l),
@@ -613,34 +647,35 @@ class ChannelSidebar extends StatelessWidget {
     SessionController s,
     L10n l,
   ) async {
-    await showAppContextMenu(
-      context,
-      const Offset(120, 48),
-      [
-        if (s.can(Permission.manageSettings) ||
-            s.can(Permission.manageRoles) ||
-            s.can(Permission.viewAuditLog))
+    await showAppContextMenu(context, const Offset(120, 48), [
+      if (s.can(Permission.manageSettings) ||
+          s.can(Permission.manageRoles) ||
+          s.can(Permission.viewAuditLog))
           MenuAction(
+            icon: Icons.settings_outlined,
             label: l('serverSettings'),
             onTap: () => s.openOverlay('serverSettings'),
           ),
         if (s.can(Permission.manageChannels))
           MenuAction(
+            icon: Icons.tag,
             label: l('createChannel'),
             onTap: () => _createChannel(context, s),
           ),
         if (s.can(Permission.manageCategories))
           MenuAction(
+            icon: Icons.create_new_folder_outlined,
             label: l('createCategory'),
             onTap: () => _createCategory(context, s),
           ),
         MenuAction(
+          icon: Icons.logout,
           label: l('disconnect'),
           danger: true,
+          dividerBefore: true,
           onTap: () => s.disconnect(),
         ),
-      ],
-    );
+    ]);
   }
 
   List<Widget> _dmList(BuildContext context, SessionController s, L10n l) {
@@ -648,7 +683,10 @@ class ChannelSidebar extends StatelessWidget {
       return [
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-          child: Text(l('noDms'), style: TextStyle(color: context.p.faint, fontSize: 13)),
+          child: Text(
+            l('noDms'),
+            style: TextStyle(color: context.p.faint, fontSize: 13),
+          ),
         ),
       ];
     }
@@ -680,17 +718,20 @@ class ChannelSidebar extends StatelessWidget {
             child: ContextRegion(
               onTap: (_) => s.toggleCategory(cat.id),
               actions: () => [
-                MenuAction(
-                  label: l('createChannel'),
-                  enabled: s.can(Permission.manageChannels),
-                  onTap: () => _createChannel(context, s, categoryId: cat.id),
-                ),
-                MenuAction(
-                  label: l('delete'),
-                  danger: true,
-                  enabled: s.can(Permission.manageCategories),
-                  onTap: () => s.deleteCategory(cat.id),
-                ),
+                if (s.can(Permission.manageChannels))
+                  MenuAction(
+                    icon: Icons.tag,
+                    label: l('createChannel'),
+                    onTap: () => _createChannel(context, s, categoryId: cat.id),
+                  ),
+                if (s.can(Permission.manageCategories))
+                  MenuAction(
+                    icon: Icons.delete_outline,
+                    label: l('delete'),
+                    danger: true,
+                    dividerBefore: s.can(Permission.manageChannels),
+                    onTap: () => s.deleteCategory(cat.id),
+                  ),
               ],
               child: Row(
                 children: [
@@ -740,7 +781,8 @@ class ChannelSidebar extends StatelessWidget {
     Widget? trailing,
     Color? accent,
   }) {
-    final color = accent ??
+    final color =
+        accent ??
         (selected || (unread > 0 && unreadBold)
             ? context.p.foreground
             : context.p.muted);
@@ -767,7 +809,9 @@ class ChannelSidebar extends StatelessWidget {
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
                       color: color,
-                      fontWeight: unread > 0 ? FontWeight.w600 : FontWeight.w500,
+                      fontWeight: unread > 0
+                          ? FontWeight.w600
+                          : FontWeight.w500,
                       fontSize: 15,
                       height: 1.2,
                     ),
@@ -793,29 +837,36 @@ class ChannelSidebar extends StatelessWidget {
     return ContextRegion(
       onTap: (_) => _pick(s, c.id),
       actions: () => [
+        if (s.can(Permission.manageChannels))
+          MenuAction(
+            icon: Icons.settings_outlined,
+            label: l('channelSettings'),
+            onTap: () => s.openOverlay('channelSettings', channelId: c.id),
+          ),
         MenuAction(
-          label: l('channelSettings'),
-          enabled: s.can(Permission.manageChannels),
-          onTap: () => s.openOverlay('channelSettings', channelId: c.id),
-        ),
-        MenuAction(
+          icon: Icons.notifications_outlined,
           label: l('notifyAll'),
+          dividerBefore: s.can(Permission.manageChannels),
           onTap: () => s.setNotificationOverride(c.id, 'all'),
         ),
         MenuAction(
+          icon: Icons.alternate_email,
           label: l('notifyMentions'),
           onTap: () => s.setNotificationOverride(c.id, 'mentions'),
         ),
         MenuAction(
+          icon: Icons.notifications_off_outlined,
           label: l('notifyMute'),
           onTap: () => s.setNotificationOverride(c.id, 'nothing'),
         ),
-        MenuAction(
-          label: l('delete'),
-          danger: true,
-          enabled: s.can(Permission.manageChannels),
-          onTap: () => s.deleteChannel(c.id),
-        ),
+        if (s.can(Permission.manageChannels))
+          MenuAction(
+            icon: Icons.delete_outline,
+            label: l('delete'),
+            danger: true,
+            dividerBefore: true,
+            onTap: () => s.deleteChannel(c.id),
+          ),
       ],
       child: _row(
         context,
@@ -844,45 +895,48 @@ class ChannelSidebar extends StatelessWidget {
     final liveColor = sharing
         ? const Color(0xFF3B82F6)
         : connected || (selected && occupied)
-            ? kVoiceLive
-            : null;
+        ? kVoiceLive
+        : null;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         ContextRegion(
           onTap: (_) => _pick(s, c.id),
           actions: () => [
-            MenuAction(
-              label: l('voiceStatus'),
-              enabled: s.can(Permission.setVoiceChannelStatus),
-              onTap: () async {
-                final ctrl = TextEditingController(text: c.voiceStatus ?? '');
-                final ok = await showDialog<bool>(
-                  context: context,
-                  builder: (ctx) => AlertDialog(
-                    title: Text(l('voiceStatus')),
-                    content: KurierField(controller: ctrl),
-                    actions: [
-                      TextButton(
-                        onPressed: () => Navigator.pop(ctx, false),
-                        child: Text(l('cancel')),
-                      ),
-                      TextButton(
-                        onPressed: () => Navigator.pop(ctx, true),
-                        child: Text(l('save')),
-                      ),
-                    ],
-                  ),
-                );
-                if (ok == true) await s.setVoiceStatus(c.id, ctrl.text);
-              },
-            ),
-            MenuAction(
-              label: l('delete'),
-              danger: true,
-              enabled: s.can(Permission.manageChannels),
-              onTap: () => s.deleteChannel(c.id),
-            ),
+            if (s.can(Permission.setVoiceChannelStatus))
+              MenuAction(
+                icon: Icons.edit_outlined,
+                label: l('voiceStatus'),
+                onTap: () async {
+                  final ctrl = TextEditingController(text: c.voiceStatus ?? '');
+                  final ok = await showDialog<bool>(
+                    context: context,
+                    builder: (ctx) => AlertDialog(
+                      title: Text(l('voiceStatus')),
+                      content: KurierField(controller: ctrl),
+                      actions: [
+                        TextButton(
+                          onPressed: () => Navigator.pop(ctx, false),
+                          child: Text(l('cancel')),
+                        ),
+                        TextButton(
+                          onPressed: () => Navigator.pop(ctx, true),
+                          child: Text(l('save')),
+                        ),
+                      ],
+                    ),
+                  );
+                  if (ok == true) await s.setVoiceStatus(c.id, ctrl.text);
+                },
+              ),
+            if (s.can(Permission.manageChannels))
+              MenuAction(
+                icon: Icons.delete_outline,
+                label: l('delete'),
+                danger: true,
+                dividerBefore: s.can(Permission.setVoiceChannelStatus),
+                onTap: () => s.deleteChannel(c.id),
+              ),
           ],
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -907,10 +961,7 @@ class ChannelSidebar extends StatelessWidget {
                 trailing: since != null && since > 0
                     ? ElapsedTime(
                         startedAt: since,
-                        style: const TextStyle(
-                          color: kVoiceLive,
-                          fontSize: 10,
-                        ),
+                        style: const TextStyle(color: kVoiceLive, fontSize: 10),
                       )
                     : null,
               ),
@@ -933,8 +984,7 @@ class ChannelSidebar extends StatelessWidget {
               children: [
                 for (final e in occupants.entries)
                   _voiceOccupant(context, s, e.key, e.value),
-                for (final stream in streams)
-                  _externalStream(context, stream),
+                for (final stream in streams) _externalStream(context, stream),
               ],
             ),
           ),
@@ -965,7 +1015,11 @@ class ChannelSidebar extends StatelessWidget {
             child: Text(
               user?.displayName ?? '',
               overflow: TextOverflow.ellipsis,
-              style: TextStyle(color: context.p.muted, fontSize: 13, height: 1.2),
+              style: TextStyle(
+                color: context.p.muted,
+                fontSize: 13,
+                height: 1.2,
+              ),
             ),
           ),
           ElapsedTime(
@@ -984,7 +1038,11 @@ class ChannelSidebar extends StatelessWidget {
             if (st.webcamEnabled)
               Icon(Icons.videocam, size: 12, color: const Color(0xFF3B82F6)),
             if (st.sharingScreen)
-              Icon(Icons.screen_share, size: 12, color: const Color(0xFFA855F7)),
+              Icon(
+                Icons.screen_share,
+                size: 12,
+                color: const Color(0xFFA855F7),
+              ),
           ],
         ],
       ),
@@ -1028,7 +1086,11 @@ class ChannelSidebar extends StatelessWidget {
             child: Text(
               stream.title,
               overflow: TextOverflow.ellipsis,
-              style: TextStyle(color: context.p.muted, fontSize: 13, height: 1.2),
+              style: TextStyle(
+                color: context.p.muted,
+                fontSize: 13,
+                height: 1.2,
+              ),
             ),
           ),
         ],
@@ -1089,7 +1151,10 @@ class ChannelSidebar extends StatelessWidget {
     }
   }
 
-  Future<void> _createCategory(BuildContext context, SessionController s) async {
+  Future<void> _createCategory(
+    BuildContext context,
+    SessionController s,
+  ) async {
     final l = L10n.of(context);
     final name = TextEditingController();
     final ok = await showDialog<bool>(
@@ -1164,7 +1229,11 @@ class AccountBar extends StatelessWidget {
                         ? me!.statusMessage!
                         : (me?.status ?? ''),
                     overflow: TextOverflow.ellipsis,
-                    style: TextStyle(color: context.p.faint, fontSize: 11, height: 1.15),
+                    style: TextStyle(
+                      color: context.p.faint,
+                      fontSize: 11,
+                      height: 1.15,
+                    ),
                   ),
                 ],
               ),
@@ -1177,9 +1246,7 @@ class AccountBar extends StatelessWidget {
             background: s.micMuted
                 ? context.p.dnd.withValues(alpha: 0.12)
                 : null,
-            onPressed: muteEnabled
-                ? () => s.setMicMuted(!s.micMuted)
-                : null,
+            onPressed: muteEnabled ? () => s.setMicMuted(!s.micMuted) : null,
           ),
           CompactIconButton(
             tooltip: s.soundMuted ? l('undeafen') : l('deafen'),
