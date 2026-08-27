@@ -4,6 +4,7 @@ import 'dart:typed_data';
 
 import 'package:web/web.dart' as web;
 
+import 'device_token.dart';
 import 'voice_protocol.dart';
 import 'voice_stats.dart';
 
@@ -424,6 +425,43 @@ class PlatformBridge {
       _setOrCreateLink('icon', iconUrl);
       _setOrCreateLink('apple-touch-icon', iconUrl);
     }
+  }
+
+  static String? randomUuid() {
+    try {
+      final uuid = web.window.crypto.randomUUID();
+      return uuid.isEmpty ? null : uuid;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static String? vanillaDeviceTokenLocalStorage() {
+    try {
+      return web.window.localStorage.getItem(kDeviceTokenStorageKey);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static String? vanillaDeviceTokenCookie() {
+    try {
+      return namedCookieValue(web.document.cookie, kDeviceTokenStorageKey);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static void persistVanillaDeviceToken(String token) {
+    try {
+      web.window.localStorage.setItem(kDeviceTokenStorageKey, token);
+    } catch (_) {}
+    try {
+      web.document.cookie = deviceTokenCookieAssignment(
+        token,
+        secure: web.window.isSecureContext,
+      );
+    } catch (_) {}
   }
 
   static void _setOrCreateLink(String rel, String href) {

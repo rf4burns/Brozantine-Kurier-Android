@@ -326,6 +326,68 @@ Future<void> banMember(
   if (ok == true) await s.ban(u.id, ctrl.text);
 }
 
+Future<bool> banMemberBrowser(
+  BuildContext context,
+  SessionController s,
+  String token,
+) async {
+  final l = L10n.of(context);
+  final ctrl = TextEditingController();
+  final ok = await showDialog<bool>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: Text(l('banBrowserTitle')),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(l('banBrowserMsg')),
+          const SizedBox(height: 12),
+          KurierField(
+            controller: ctrl,
+            label: l('reason'),
+            hint: l('reason'),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(ctx, false),
+          child: Text(l('cancel')),
+        ),
+        TextButton(
+          onPressed: () => Navigator.pop(ctx, true),
+          child: Text(l('banBrowserConfirm')),
+        ),
+      ],
+    ),
+  );
+  if (ok != true || !context.mounted) {
+    ctrl.dispose();
+    return false;
+  }
+  final reason = ctrl.text.trim();
+  ctrl.dispose();
+  try {
+    await s.addAccessBan({
+      'kind': 'device',
+      'value': token,
+      if (reason.isNotEmpty) 'reason': reason,
+    });
+    if (!context.mounted) return true;
+    ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+      SnackBar(content: Text(l('banBrowserSuccess'))),
+    );
+    return true;
+  } catch (_) {
+    if (!context.mounted) return false;
+    ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+      SnackBar(content: Text(l('failedBanBrowser'))),
+    );
+    return false;
+  }
+}
+
 Future<void> deleteMember(
   BuildContext context,
   SessionController s,
@@ -642,7 +704,9 @@ class _MemberMenuState extends State<_MemberMenu> {
 
   KurierUser? get user => s.users[widget.userId];
 
-  bool get _canFetchInfo => s.canAny(const [
+  bool get _canFetchInfo =>
+      s.isOwner ||
+      s.canAny(const [
         Permission.manageUsers,
         Permission.viewUserSensitiveData,
         Permission.viewAuditLog,
@@ -701,6 +765,7 @@ class _MemberMenuState extends State<_MemberMenu> {
 
     final showCards = _info != null;
     final showSensitive = s.can(Permission.viewUserSensitiveData);
+    final showBrowserToken = s.isOwner;
     final showJoined = u.createdAt > 0 && !showCards;
     final showLastActive =
         (u.lastLoginAt > 0 || (_info?.user.lastLoginAt ?? 0) > 0) && !showCards;
@@ -815,9 +880,11 @@ class _MemberMenuState extends State<_MemberMenu> {
                   ),
                   const SizedBox(height: 8),
                   _DetailsCard(
+                    session: s,
                     user: _info!.user.lastLoginAt > 0 ? _info!.user : live,
                     login: _info!.logins.isEmpty ? null : _info!.logins.first,
                     showSensitive: showSensitive,
+                    showBrowserToken: showBrowserToken,
                   ),
                   const SizedBox(height: 8),
                 ] else if (showJoined || showLastActive) ...[
@@ -1039,14 +1106,18 @@ class _InfoRow extends StatelessWidget {
 
 class _DetailsCard extends StatefulWidget {
   const _DetailsCard({
+    required this.session,
     required this.user,
     required this.login,
     required this.showSensitive,
+    required this.showBrowserToken,
   });
 
+  final SessionController session;
   final KurierUser user;
   final UserLoginInfo? login;
   final bool showSensitive;
+  final bool showBrowserToken;
 
   @override
   State<_DetailsCard> createState() => _DetailsCardState();
@@ -1064,6 +1135,9 @@ class _DetailsCardState extends State<_DetailsCard> {
       if ((login?.country ?? '').isNotEmpty) login!.country,
       if ((login?.city ?? '').isNotEmpty) login!.city,
     ].join(' - ');
+    final token = widget.showBrowserToken
+        ? (login?.deviceToken?.trim() ?? '')
+        : '';
     return _InfoCard(
       icon: Icons.assignment_outlined,
       title: l('detailsTitle'),
@@ -1090,6 +1164,27 @@ class _DetailsCardState extends State<_DetailsCard> {
               if (!_revealed.add('ip')) _revealed.remove('ip');
             }),
           ),
+        ],
+        if (widget.showBrowserToken)
+          _SecretRow(
+            icon: Icons.fingerprint,
+            label: l('browserTokenLabel'),
+            value: token.isNotEmpty ? token : l('unknownValue'),
+            revealed: _revealed.contains('device'),
+            onToggle: () => setState(() {
+              if (!_revealed.add('device')) _revealed.remove('device');
+            }),
+            action: token.isNotEmpty
+                ? _BanBrowserButton(
+                    onPressed: () => banMemberBrowser(
+                      context,
+                      widget.session,
+                      token,
+                    ),
+                  )
+                : null,
+          ),
+        if (widget.showSensitive)
           _SecretRow(
             label: l('locationLabel'),
             value: location.isEmpty ? l('naValue') : location,
@@ -1098,7 +1193,6 @@ class _DetailsCardState extends State<_DetailsCard> {
               if (!_revealed.add('loc')) _revealed.remove('loc');
             }),
           ),
-        ],
         if (u.createdAt > 0)
           _InfoRow(
             icon: Icons.calendar_today_outlined,
@@ -1116,18 +1210,48 @@ class _DetailsCardState extends State<_DetailsCard> {
   }
 }
 
+class _BanBrowserButton extends StatelessWidget {
+  const _BanBrowserButton({required this.onPressed});
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final p = context.p;
+    return OutlinedButton(
+      onPressed: onPressed,
+      style: OutlinedButton.styleFrom(
+        visualDensity: VisualDensity.compact,
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        minimumSize: Size.zero,
+        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        foregroundColor: p.foreground,
+        side: BorderSide(color: p.divider),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+      ),
+      child: Text(
+        L10n.of(context)('banBrowserBtn'),
+        style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+      ),
+    );
+  }
+}
+
 class _SecretRow extends StatelessWidget {
   const _SecretRow({
+    this.icon,
     required this.label,
     required this.value,
     required this.revealed,
     required this.onToggle,
+    this.action,
   });
 
+  final IconData? icon;
   final String label;
   final String value;
   final bool revealed;
   final VoidCallback onToggle;
+  final Widget? action;
 
   @override
   Widget build(BuildContext context) {
@@ -1136,13 +1260,27 @@ class _SecretRow extends StatelessWidget {
       padding: const EdgeInsets.symmetric(vertical: 4),
       child: Row(
         children: [
+          if (icon != null) ...[
+            Icon(icon, size: 14, color: p.muted),
+            const SizedBox(width: 6),
+          ],
           Expanded(
-            child: Text(label, style: TextStyle(color: p.muted, fontSize: 13)),
+            child: Text(
+              label,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(color: p.muted, fontSize: 13),
+            ),
           ),
-          Text(
-            revealed ? value : '***',
-            style: TextStyle(color: p.foreground, fontSize: 13),
+          Flexible(
+            child: Text(
+              revealed ? value : '***',
+              overflow: TextOverflow.ellipsis,
+              maxLines: 1,
+              softWrap: false,
+              style: TextStyle(color: p.foreground, fontSize: 13),
+            ),
           ),
+          if (action != null) ...[const SizedBox(width: 6), action!],
           const SizedBox(width: 4),
           InkWell(
             onTap: onToggle,

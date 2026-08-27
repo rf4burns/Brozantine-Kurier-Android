@@ -403,17 +403,19 @@ class KurierUser {
 }
 
 class UserLoginInfo {
-  const UserLoginInfo({this.ip, this.country, this.city});
+  const UserLoginInfo({this.ip, this.country, this.city, this.deviceToken});
 
   final String? ip;
   final String? country;
   final String? city;
+  final String? deviceToken;
 
   factory UserLoginInfo.fromJson(Map<String, dynamic> json) {
     return UserLoginInfo(
-      ip: json['ip'] as String?,
-      country: json['country'] as String?,
-      city: json['city'] as String?,
+      ip: asOptionalString(json['ip']),
+      country: asOptionalString(json['country']),
+      city: asOptionalString(json['city']),
+      deviceToken: asOptionalString(json['deviceToken']),
     );
   }
 }

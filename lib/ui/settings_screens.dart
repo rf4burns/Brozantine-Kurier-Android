@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../app/l10n.dart';
@@ -805,7 +804,13 @@ class _BanSectionState extends State<_BanSection> {
       title: l(_titleKey),
       description: l(_descKey),
       children: [
-        if (widget.kind == 'device') _CurrentBrowserToken(s: widget.s),
+        if (widget.kind == 'device')
+          CurrentBrowserToken(
+            s: widget.s,
+            title: l('accessBansDeviceCurrentLabel'),
+            onBanned: widget.onChanged,
+            bannedValues: widget.items,
+          ),
         LayoutBuilder(
           builder: (context, constraints) {
             final stacked = constraints.maxWidth < 560;
@@ -924,58 +929,6 @@ class _BanRow extends StatelessWidget {
           ),
         ],
       ),
-    );
-  }
-}
-
-class _CurrentBrowserToken extends StatelessWidget {
-  const _CurrentBrowserToken({required this.s});
-  final SessionController s;
-
-  @override
-  Widget build(BuildContext context) {
-    final l = L10n.of(context);
-    final p = context.p;
-    final token = s.store.deviceToken();
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          l('accessBansDeviceCurrentLabel'),
-          style: TextStyle(
-            color: p.foreground,
-            fontSize: 13,
-            fontWeight: FontWeight.w600,
-          ),
-        ),
-        const SizedBox(height: 8),
-        Row(
-          children: [
-            Expanded(
-              child: Text(
-                token,
-                style: TextStyle(
-                  color: p.muted,
-                  fontSize: 13,
-                  fontFamily: 'monospace',
-                ),
-              ),
-            ),
-            const SizedBox(width: 8),
-            KurierButton(
-              label: l('accessBansDeviceCopy'),
-              outline: true,
-              onPressed: () async {
-                await Clipboard.setData(ClipboardData(text: token));
-                if (!context.mounted) return;
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text(l('accessBansDeviceCopied'))),
-                );
-              },
-            ),
-          ],
-        ),
-      ],
     );
   }
 }

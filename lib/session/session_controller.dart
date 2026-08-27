@@ -38,6 +38,9 @@ class SessionController extends ChangeNotifier {
   final store = HostsStore();
   final logs = <String>[];
 
+  /// Test seam for [getUserInfo] when no tRPC client is connected.
+  UserAdminInfo? Function(int userId)? userInfoOverride;
+
   SessionPhase phase = SessionPhase.boot;
   List<SavedHost> hosts = [];
   String? activeHost;
@@ -2985,6 +2988,8 @@ class SessionController extends ChangeNotifier {
   );
 
   Future<UserAdminInfo?> getUserInfo(int userId) async {
+    final override = userInfoOverride;
+    if (override != null) return override(userId);
     if (trpc == null) return null;
     try {
       final raw = await trpc!.query('users.getInfo', {'userId': userId});

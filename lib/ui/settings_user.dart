@@ -2,16 +2,19 @@ import 'dart:async';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../app/l10n.dart';
 import '../app/theme.dart';
 import '../protocol/config.dart';
+import '../protocol/device_token.dart';
 import '../protocol/permissions.dart';
 import '../protocol/platform.dart';
 import '../protocol/sounds.dart';
 import '../session/session_controller.dart';
 import 'media_stream_view_stub.dart'
     if (dart.library.js_interop) 'media_stream_view_web.dart';
+import 'member_context_menu.dart';
 import 'profile_card.dart';
 import 'settings_chrome.dart';
 import 'shared.dart';
@@ -1105,6 +1108,126 @@ class _OthersSettingsTabState extends State<OthersSettingsTab> {
             label: l('useToken'),
             onPressed: () => s.claimOwner(token.text),
           ),
+        ),
+        if (s.isOwner)
+          CurrentBrowserToken(
+            s: s,
+            title: l('clientDataTitle'),
+            description: l('clientDataDesc'),
+          ),
+      ],
+    );
+  }
+}
+
+class CurrentBrowserToken extends StatefulWidget {
+  const CurrentBrowserToken({
+    super.key,
+    required this.s,
+    this.title,
+    this.description,
+    this.onBanned,
+    this.bannedValues = const [],
+  });
+
+  final SessionController s;
+  final String? title;
+  final String? description;
+  final Future<void> Function()? onBanned;
+  final List<Map<String, dynamic>> bannedValues;
+
+  @override
+  State<CurrentBrowserToken> createState() => _CurrentBrowserTokenState();
+}
+
+class _CurrentBrowserTokenState extends State<CurrentBrowserToken> {
+  var _bannedLocally = false;
+
+  bool _matchesToken(String token, String? raw) {
+    final want = normalizeDeviceToken(token);
+    final got = normalizeDeviceToken(raw);
+    return want != null && got != null && want == got;
+  }
+
+  bool _isBanned(String token) {
+    if (_bannedLocally) return true;
+    return widget.bannedValues.any(
+      (item) => _matchesToken(token, '${item['value'] ?? ''}'),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final l = L10n.of(context);
+    final p = context.p;
+    final token = widget.s.store.deviceToken();
+    final banned = _isBanned(token);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (widget.title != null)
+          Text(
+            widget.title!,
+            style: TextStyle(
+              color: p.foreground,
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        if (widget.description != null) ...[
+          const SizedBox(height: 2),
+          Text(
+            widget.description!,
+            style: TextStyle(color: p.muted, fontSize: 13, height: 1.35),
+          ),
+        ],
+        const SizedBox(height: 8),
+        SelectableText(
+          token,
+          style: TextStyle(
+            color: p.muted,
+            fontSize: 13,
+            fontFamily: 'monospace',
+          ),
+        ),
+        const SizedBox(height: 8),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          children: [
+            KurierButton(
+              label: l('accessBansDeviceCopy'),
+              outline: true,
+              onPressed: () async {
+                await Clipboard.setData(ClipboardData(text: token));
+                if (!context.mounted) return;
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text(l('accessBansDeviceCopied'))),
+                );
+              },
+            ),
+            if (banned)
+              Text(
+                l('accessBansDeviceBanned'),
+                style: TextStyle(color: p.muted, fontSize: 13),
+              )
+            else
+              KurierButton(
+                label: l('accessBansDeviceBan'),
+                danger: true,
+                onPressed: () async {
+                  final ok = await banMemberBrowser(
+                    context,
+                    widget.s,
+                    token,
+                  );
+                  if (!ok || !mounted) return;
+                  setState(() => _bannedLocally = true);
+                  await widget.onBanned?.call();
+                },
+              ),
+          ],
         ),
       ],
     );

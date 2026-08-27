@@ -2935,6 +2935,154 @@ void main() {
     expect(find.text('Delete account'), findsOneWidget);
   });
 
+  testWidgets('owner member menu shows hidden browser token and ban', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1280, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    const token = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+    final s = _readySession(selectedChannelId: 10);
+    _grantOwner(s);
+    s.userInfoOverride = (id) => id == 2
+        ? UserAdminInfo(
+            user: s.users[2]!,
+            logins: const [
+              UserLoginInfo(
+                ip: '203.0.113.9',
+                country: 'US',
+                city: 'Austin',
+                deviceToken: token,
+              ),
+            ],
+          )
+        : null;
+
+    await tester.pumpWidget(_app(s));
+    await tester.pump();
+    await tester.longPress(find.text('Gordon'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Browser token'), findsOneWidget);
+    expect(find.text('Ban browser'), findsOneWidget);
+    expect(find.byIcon(Icons.fingerprint), findsOneWidget);
+    expect(find.text(token), findsNothing);
+
+    final row = find
+        .ancestor(
+          of: find.byIcon(Icons.fingerprint),
+          matching: find.byType(Row),
+        )
+        .first;
+    await tester.tap(
+      find.descendant(
+        of: row,
+        matching: find.byIcon(Icons.visibility_outlined),
+      ),
+    );
+    await tester.pump();
+    expect(find.text(token), findsOneWidget);
+
+    await tester.tap(find.text('Ban browser'));
+    await tester.pumpAndSettle();
+    expect(
+      find.text(
+        'Permanently block this browser from logging in or creating accounts. Owner accounts are not blocked.',
+      ),
+      findsOneWidget,
+    );
+    expect(find.text('Browser token'), findsOneWidget);
+  });
+
+  testWidgets('member menu hides browser token for non-owners', (tester) async {
+    tester.view.physicalSize = const Size(1280, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final s = _readySession(selectedChannelId: 10);
+    s.roles[10] = KurierRole(
+      id: 10,
+      name: 'Mod',
+      color: '#EB459E',
+      position: 50,
+      hoist: true,
+      isDefault: false,
+      isPersistent: false,
+      permissions: const [
+        Permission.manageUsers,
+        Permission.viewUserSensitiveData,
+      ],
+    );
+    s.users[1] = s.users[1]!.copyWith(roleIds: [10]);
+    s.userInfoOverride = (_) => UserAdminInfo(
+      user: s.users[2]!,
+      logins: const [
+        UserLoginInfo(
+          ip: '203.0.113.9',
+          country: 'US',
+          city: 'Austin',
+          deviceToken: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+        ),
+      ],
+    );
+
+    await tester.pumpWidget(_app(s));
+    await tester.pump();
+    await tester.longPress(find.text('Gordon'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('IP Address'), findsOneWidget);
+    expect(find.text('Browser token'), findsNothing);
+    expect(find.text('Ban browser'), findsNothing);
+    expect(find.byIcon(Icons.fingerprint), findsNothing);
+  });
+
+  testWidgets('admin without owner role cannot see browser token row', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1280, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final s = _readySession(selectedChannelId: 10);
+    s.roles[10] = KurierRole(
+      id: 10,
+      name: 'Admin',
+      color: '#EB459E',
+      position: 50,
+      hoist: true,
+      isDefault: false,
+      isPersistent: false,
+      permissions: Permission.all,
+    );
+    s.users[1] = s.users[1]!.copyWith(roleIds: [10]);
+    s.userInfoOverride = (_) => UserAdminInfo(
+      user: s.users[2]!,
+      logins: const [
+        UserLoginInfo(
+          ip: '203.0.113.9',
+          country: 'US',
+          city: 'Austin',
+          deviceToken: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+        ),
+      ],
+    );
+
+    await tester.pumpWidget(_app(s));
+    await tester.pump();
+    await tester.longPress(find.text('Gordon'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('IP Address'), findsOneWidget);
+    expect(find.text('Browser token'), findsNothing);
+    expect(find.text('Ban browser'), findsNothing);
+    expect(find.byIcon(Icons.fingerprint), findsNothing);
+  });
+
   testWidgets('phone profile sheet shows voice, volume, and overflow mods', (
     tester,
   ) async {

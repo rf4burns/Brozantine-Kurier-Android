@@ -91,4 +91,8 @@ class PlatformBridge {
   }) {}
   static void listen(void Function(String name, String payload) handler) {}
   static void applyBrowserBranding({required String title, String? iconUrl}) {}
+  static String? randomUuid() => null;
+  static String? vanillaDeviceTokenLocalStorage() => null;
+  static String? vanillaDeviceTokenCookie() => null;
+  static void persistVanillaDeviceToken(String token) {}
 }

@@ -1,10 +1,11 @@
 import 'dart:convert';
-import 'dart:math';
 
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../app/breakpoints.dart';
+import '../protocol/device_token.dart';
 import '../protocol/models.dart';
+import '../protocol/platform.dart';
 
 class HostsStore {
   static const _hostsKey = 'kurier.hosts';
@@ -78,11 +79,16 @@ class HostsStore {
   }
 
   String deviceToken() {
-    var t = _p?.getString(_deviceKey);
-    if (t == null || t.isEmpty) {
-      t = _randomToken();
-      _p?.setString(_deviceKey, t);
-    }
+    final t = resolveDeviceToken(
+      fromPrefs: _p?.getString(_deviceKey),
+      fromLocalStorage: PlatformBridge.vanillaDeviceTokenLocalStorage(),
+      fromCookie: PlatformBridge.vanillaDeviceTokenCookie(),
+      create: () =>
+          normalizeDeviceToken(PlatformBridge.randomUuid()) ??
+          generateDeviceToken(),
+    );
+    _p?.setString(_deviceKey, t);
+    PlatformBridge.persistVanillaDeviceToken(t);
     return t;
   }
 
@@ -234,10 +240,4 @@ class HostsStore {
   String? get quickReactionCountsJson => _p?.getString(_quickReactionsKey);
   Future<void> setQuickReactionCountsJson(String json) =>
       _p!.setString(_quickReactionsKey, json);
-
-  String _randomToken() {
-    const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
-    final r = Random.secure();
-    return List.generate(32, (_) => chars[r.nextInt(chars.length)]).join();
-  }
 }

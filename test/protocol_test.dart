@@ -1,22 +1,26 @@
 import 'dart:convert';
+import 'dart:math';
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:kurier_web/app/l10n_tables.dart';
 import 'package:kurier_web/core/custom_emoji.dart';
 import 'package:kurier_web/core/emoji_codec.dart';
 import 'package:kurier_web/protocol/activity_log.dart';
 import 'package:kurier_web/protocol/config.dart';
+import 'package:kurier_web/protocol/device_token.dart';
+import 'package:kurier_web/protocol/http_api.dart';
 import 'package:kurier_web/protocol/mentions.dart';
 import 'package:kurier_web/protocol/models.dart';
-import 'package:kurier_web/protocol/http_api.dart';
 import 'package:kurier_web/protocol/permissions.dart';
 import 'package:kurier_web/protocol/search_query.dart';
 import 'package:kurier_web/protocol/sounds.dart';
 import 'package:kurier_web/protocol/trpc_client.dart';
 import 'package:kurier_web/protocol/voice_protocol.dart';
 import 'package:kurier_web/protocol/voice_stats.dart';
+import 'package:kurier_web/session/hosts_store.dart';
 import 'package:kurier_web/session/message_history.dart';
 import 'package:kurier_web/session/session_controller.dart';
 import 'package:kurier_web/ui/shared.dart';
@@ -1279,6 +1283,18 @@ void main() {
       );
     });
 
+    test('parses deviceToken from user login info', () {
+      final login = UserLoginInfo.fromJson({
+        'ip': '203.0.113.9',
+        'country': 'US',
+        'city': 'Austin',
+        'deviceToken': 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+      });
+      expect(login.ip, '203.0.113.9');
+      expect(login.deviceToken, 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee');
+      expect(UserLoginInfo.fromJson({'deviceToken': '  '}).deviceToken, isNull);
+    });
+
     test('parses signed file tokens without requiring expires together', () {
       final file = KurierFile.fromJson({
         'id': 9,
@@ -1879,6 +1895,125 @@ void main() {
       });
       expect(s.connectedVoiceChannelId, isNull);
       expect(s.voiceState, 'idle');
+    });
+  });
+
+  group('device token', () {
+    const uuid = '550e8400-e29b-41d4-a716-446655440000';
+    const hex = '550e8400e29b41d4a716446655440000';
+
+    test('normalizes hyphenated, braced, and uppercase UUIDs', () {
+      expect(normalizeDeviceToken(uuid), uuid);
+      expect(normalizeDeviceToken(hex), uuid);
+      expect(normalizeDeviceToken('{${uuid.toUpperCase()}}'), uuid);
+      expect(normalizeDeviceToken('  $uuid  '), uuid);
+    });
+
+    test('rejects old overlay alphanumeric tokens and junk', () {
+      expect(normalizeDeviceToken('abcdefghijklmnop0123456789abcdef'), isNull);
+      expect(normalizeDeviceToken('not-a-uuid'), isNull);
+      expect(normalizeDeviceToken(''), isNull);
+      expect(normalizeDeviceToken(null), isNull);
+      expect(normalizeDeviceToken('550e8400-e29b-41d4-a716-44665544000'), isNull);
+    });
+
+    test('generateDeviceToken is a hyphenated UUID v4', () {
+      final token = generateDeviceToken(Random(1));
+      expect(normalizeDeviceToken(token), token);
+      expect(
+        RegExp(
+          r'^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$',
+        ).hasMatch(token),
+        isTrue,
+      );
+    });
+
+    test('resolve prefers prefs, then localStorage, then cookie', () {
+      expect(
+        resolveDeviceToken(
+          fromPrefs: uuid,
+          fromLocalStorage: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+          fromCookie: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+        ),
+        uuid,
+      );
+      expect(
+        resolveDeviceToken(
+          fromPrefs: 'legacy-alphanumeric-token-not-hex!!',
+          fromLocalStorage: uuid,
+          fromCookie: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+        ),
+        uuid,
+      );
+      expect(
+        resolveDeviceToken(
+          fromPrefs: 'not-valid',
+          fromLocalStorage: 'also-bad',
+          fromCookie: uuid,
+        ),
+        uuid,
+      );
+    });
+
+    test('invalid overlay token migrates to a created UUID', () {
+      const created = '11111111-1111-4111-8111-111111111111';
+      expect(
+        resolveDeviceToken(
+          fromPrefs: 'abcdefghijklmnopqrstuvwxyz012345',
+          fromLocalStorage: null,
+          fromCookie: '',
+          create: () => created,
+        ),
+        created,
+      );
+    });
+
+    test('cookie assignment and parse match vanilla', () {
+      final assignment = deviceTokenCookieAssignment(uuid);
+      expect(assignment, contains('$kDeviceTokenStorageKey=$uuid'));
+      expect(assignment, contains('max-age=$kDeviceTokenCookieMaxAge'));
+      expect(assignment, contains('path=/'));
+      expect(assignment, contains('samesite=lax'));
+      expect(assignment, isNot(contains('Secure')));
+      expect(
+        namedCookieValue(
+          'other=1; $kDeviceTokenStorageKey=$uuid; extra=yes',
+          kDeviceTokenStorageKey,
+        ),
+        uuid,
+      );
+    });
+
+    test('cookie assignment adds Secure when requested', () {
+      final assignment = deviceTokenCookieAssignment(uuid, secure: true);
+      expect(assignment, contains('$kDeviceTokenStorageKey=$uuid'));
+      expect(assignment, contains('max-age=$kDeviceTokenCookieMaxAge'));
+      expect(assignment, contains('path=/'));
+      expect(assignment, contains('samesite=lax'));
+      expect(assignment, contains('Secure'));
+    });
+
+    test('HostsStore keeps a valid UUID and migrates alphanumeric prefs',
+        () async {
+      SharedPreferences.setMockInitialValues({
+        'kurier.deviceToken': uuid,
+      });
+      var prefs = await SharedPreferences.getInstance();
+      await prefs.reload();
+      final keep = HostsStore();
+      await keep.load();
+      expect(keep.deviceToken(), uuid);
+
+      SharedPreferences.setMockInitialValues({
+        'kurier.deviceToken': 'abcdefghijklmnopqrstuvwxyz012345',
+      });
+      prefs = await SharedPreferences.getInstance();
+      await prefs.reload();
+      final migrate = HostsStore();
+      await migrate.load();
+      final migrated = migrate.deviceToken();
+      expect(normalizeDeviceToken(migrated), migrated);
+      expect(migrated, isNot('abcdefghijklmnopqrstuvwxyz012345'));
     });
   });
 }
