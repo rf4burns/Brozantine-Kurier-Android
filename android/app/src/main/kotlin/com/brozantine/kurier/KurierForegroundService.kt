@@ -10,7 +10,9 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.net.wifi.WifiManager
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
@@ -30,15 +32,19 @@ class KurierForegroundService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_MUTE -> {
-                actionListener?.invoke("mute")
+                dispatchAction("mute")
                 return START_STICKY
             }
             ACTION_DEAFEN -> {
-                actionListener?.invoke("deafen")
+                dispatchAction("deafen")
                 return START_STICKY
             }
             ACTION_LEAVE -> {
-                actionListener?.invoke("leave")
+                dispatchAction("leave")
+                return START_STICKY
+            }
+            ACTION_DISCONNECT -> {
+                dispatchAction("disconnect")
                 return START_STICKY
             }
         }
@@ -89,6 +95,7 @@ class KurierForegroundService : Service() {
             .setSmallIcon(R.drawable.ic_stat_kurier)
             .setContentTitle("Kurier")
             .setContentText(text)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
             .setContentIntent(content)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
@@ -97,11 +104,39 @@ class KurierForegroundService : Service() {
             .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
         if (inVoice) {
             builder
-                .addAction(0, "Mute", serviceAction(ACTION_MUTE, 1))
-                .addAction(0, "Deafen", serviceAction(ACTION_DEAFEN, 2))
-                .addAction(0, "Disconnect", serviceAction(ACTION_LEAVE, 3))
+                .addAction(notifAction("Mute", ACTION_MUTE, 1))
+                .addAction(notifAction("Deafen", ACTION_DEAFEN, 2))
+                .addAction(notifAction("Disconnect", ACTION_LEAVE, 3))
+        } else {
+            builder.addAction(notifAction("Disconnect", ACTION_DISCONNECT, 4))
         }
         return builder.build()
+    }
+
+    private fun dispatchAction(action: String) {
+        val listener = actionListener
+        if (listener != null) {
+            listener.invoke(action)
+            return
+        }
+        Handler(Looper.getMainLooper()).post {
+            val channel = MainActivity.nativeMethodChannel
+            if (channel != null) {
+                channel.invokeMethod("voiceAction", action)
+            } else if (action == "disconnect") {
+                stopSelf()
+            }
+        }
+    }
+
+    private fun notifAction(
+        label: String,
+        action: String,
+        requestCode: Int,
+    ): NotificationCompat.Action {
+        return NotificationCompat.Action.Builder(0, label, serviceAction(action, requestCode))
+            .setShowsUserInterface(false)
+            .build()
     }
 
     private fun serviceAction(action: String, requestCode: Int): PendingIntent {
@@ -166,6 +201,7 @@ class KurierForegroundService : Service() {
         const val ACTION_MUTE = "com.brozantine.kurier.MUTE"
         const val ACTION_DEAFEN = "com.brozantine.kurier.DEAFEN"
         const val ACTION_LEAVE = "com.brozantine.kurier.LEAVE"
+        const val ACTION_DISCONNECT = "com.brozantine.kurier.DISCONNECT"
         const val EXTRA_SERVER = "serverName"
         const val EXTRA_VOICE = "voiceChannel"
         const val CHANNEL_ID = "kurier_keepalive"

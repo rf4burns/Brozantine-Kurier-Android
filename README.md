@@ -119,7 +119,7 @@ Or:
 flutter pub get
 flutter build web --release --base-href / --no-wasm-dry-run \
   --dart-define=WEBRTC_USE_HTML_ELEMENT_VIEW=true \
-  --dart-define=KURIER_WEB_STAMP=1.0.2
+  --dart-define=KURIER_WEB_STAMP=1.0.3
 ```
 
 The script writes `build/web/` and a `web_releases.json` stamp. Copy that folder onto the Caddy site root (for Brozantine: `/var/www/brozantine`) and reload Caddy:

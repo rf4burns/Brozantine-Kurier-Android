@@ -205,15 +205,7 @@ class SessionController extends ChangeNotifier {
     sidebarWidth = store.sidebarWidth;
     membersWidth = store.membersWidth;
     pendingInvite = Uri.base.queryParameters['invite'];
-    onVoiceNotificationAction = (action) {
-      if (action == 'mute') {
-        setMicMuted(!micMuted);
-      } else if (action == 'deafen') {
-        setSoundMuted(!soundMuted);
-      } else if (action == 'leave') {
-        leaveVoice();
-      }
-    };
+    onVoiceNotificationAction = handleNotificationAction;
     onAndroidNotificationOpened = (link) {
       if (phase != SessionPhase.ready || link.channelId == null) return;
       takePendingDeepLink();
@@ -3257,6 +3249,18 @@ class SessionController extends ChangeNotifier {
     }
     await store.saveHosts(hosts);
     await store.setActiveHost(host);
+  }
+
+  void handleNotificationAction(String action) {
+    if (action == 'mute') {
+      setMicMuted(!micMuted);
+    } else if (action == 'deafen') {
+      setSoundMuted(!soundMuted);
+    } else if (action == 'leave') {
+      leaveVoice();
+    } else if (action == 'disconnect') {
+      unawaited(disconnect());
+    }
   }
 
   Future<void> disconnect({bool forgetToken = true}) async {

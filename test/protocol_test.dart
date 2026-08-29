@@ -1136,6 +1136,14 @@ void main() {
       expect(s.disconnectCode, 1006);
     });
 
+    test('notification disconnect action returns to login', () async {
+      final s = SessionController();
+      s.phase = SessionPhase.ready;
+      s.handleNotificationAction('disconnect');
+      await Future<void>.delayed(Duration.zero);
+      expect(s.phase, SessionPhase.login);
+    });
+
     test('maps speaking meter keys to user ids', () {
       expect(speakingUserIdFromKey('local', 7), 7);
       expect(speakingUserIdFromKey('12:audio', 7), 12);
