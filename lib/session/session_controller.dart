@@ -12,6 +12,7 @@ import '../core/emoji_recent.dart';
 import '../core/gif_search.dart';
 import '../core/quick_reactions.dart';
 import '../protocol/activity_log.dart';
+import '../protocol/audio_output.dart';
 import '../protocol/config.dart';
 import '../protocol/http_api.dart';
 import '../protocol/mentions.dart';
@@ -129,6 +130,7 @@ class SessionController extends ChangeNotifier {
   DateTime? _voiceConnectedAt;
   String? appliedSpeakerDevice;
   String? lastExternalOutputId;
+  int audioDevicesEpoch = 0;
   DateTime? _playbackDeadSince;
   bool _didLightPlaybackRecovery = false;
   bool _silentRejoining = false;
@@ -1923,7 +1925,11 @@ class SessionController extends ChangeNotifier {
     }
     connectedVoiceChannelId = channelId;
     rtpCapabilities = await PlatformBridge.loadDevice(caps);
-    PlatformBridge.setOutputDevice(speakerOutputId);
+    try {
+      await PlatformBridge.setOutputDevice(speakerOutputId);
+    } catch (e) {
+      _log('setOutputDevice: $e');
+    }
     PlatformBridge.setCameraDevice(store.cameraDevice);
     if (store.ptt) micMuted = true;
     if (!_msBound) {
@@ -2234,6 +2240,9 @@ class SessionController extends ChangeNotifier {
           await ensureAudioProducer();
         } else if (name == 'screenEnded') {
           await _stopScreenShare();
+        } else if (name == 'devicechange') {
+          audioDevicesEpoch++;
+          notifyListeners();
         }
       } catch (e) {
         if (name == 'connectSend') PlatformBridge.finishConnectSend(false);
@@ -2378,10 +2387,36 @@ class SessionController extends ChangeNotifier {
   String? get speakerOutputId => appliedSpeakerDevice ?? store.speakerDevice;
 
   Future<void> applySpeakerDevice(String? id) async {
-    final next = (id == null || id.isEmpty) ? null : id;
+    final next = isDefaultAudioOutputId(id) ? null : id;
+    final prev = appliedSpeakerDevice;
     appliedSpeakerDevice = next;
     await store.setSpeakerDevice(next);
-    PlatformBridge.setOutputDevice(next);
+    try {
+      await PlatformBridge.setOutputDevice(next);
+    } catch (_) {
+      appliedSpeakerDevice = prev;
+      await store.setSpeakerDevice(prev);
+      notifyListeners();
+      rethrow;
+    }
+    notifyListeners();
+  }
+
+  Future<void> applyMicForOutput(String? id) async {
+    final next = id == null || id.isEmpty ? null : id;
+    final prev = store.micDevice;
+    await store.setMicDevice(next);
+    try {
+      await PlatformBridge.replaceMicDevice(
+        deviceId: next,
+        audioConstraints: store.audioConstraints(),
+      );
+      PlatformBridge.pauseMic(micMuted || soundMuted);
+    } catch (_) {
+      await store.setMicDevice(prev);
+      notifyListeners();
+      rethrow;
+    }
     notifyListeners();
   }
 

@@ -59,7 +59,13 @@ external JSPromise<JSAny?> _startVideoPreview(JSString? deviceId);
 external void _stopVideoPreview();
 
 @JS('KurierMediasoup.setOutputDevice')
-external void _setOutputDevice(JSString? deviceId);
+external JSPromise<JSAny?> _setOutputDevice(JSString? deviceId);
+
+@JS('KurierMediasoup.replaceMicDevice')
+external JSPromise<JSAny?> _replaceMicDevice(
+  JSString? deviceId,
+  JSString? constraints,
+);
 
 @JS('KurierMediasoup.setCameraDevice')
 external void _setCameraDevice(JSString? deviceId);
@@ -268,8 +274,22 @@ class PlatformBridge {
     if (available) _stopVideoPreview();
   }
 
-  static void setOutputDevice(String? deviceId) {
-    if (available) _setOutputDevice(deviceId?.toJS);
+  static Future<void> setOutputDevice(String? deviceId) async {
+    if (!available) return;
+    await _awaitPacked(_setOutputDevice(deviceId?.toJS));
+  }
+
+  static Future<void> replaceMicDevice({
+    String? deviceId,
+    Map<String, dynamic>? audioConstraints,
+  }) async {
+    if (!available) return;
+    await _awaitPacked(
+      _replaceMicDevice(
+        deviceId?.toJS,
+        audioConstraints == null ? null : jsonEncode(audioConstraints).toJS,
+      ),
+    );
   }
 
   static void setCameraDevice(String? deviceId) {
@@ -511,6 +531,7 @@ class PlatformBridge {
     bind('speaking');
     bind('micEnded');
     bind('screenEnded');
+    bind('devicechange');
   }
 
   static Future<String> _awaitPacked(JSPromise<JSAny?> promise) async {

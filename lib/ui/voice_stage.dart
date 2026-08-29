@@ -909,19 +909,51 @@ class _VoiceOutputControl extends StatefulWidget {
 
 class _VoiceOutputControlState extends State<_VoiceOutputControl> {
   ClassifiedAudioOutputs _classified = const ClassifiedAudioOutputs();
+  int _deviceEpoch = 0;
 
   SessionController get session => widget.session;
+
+  bool get _usesMicRoute =>
+      PlatformBridge.isIos && !PlatformBridge.canSetOutputDevice;
+
+  String? get _currentId =>
+      _usesMicRoute ? session.store.micDevice : session.speakerOutputId;
 
   @override
   void initState() {
     super.initState();
+    _deviceEpoch = session.audioDevicesEpoch;
+    session.addListener(_onSession);
+    _refreshDevices();
+  }
+
+  @override
+  void dispose() {
+    session.removeListener(_onSession);
+    super.dispose();
+  }
+
+  @override
+  void didUpdateWidget(_VoiceOutputControl oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.session != widget.session) {
+      oldWidget.session.removeListener(_onSession);
+      widget.session.addListener(_onSession);
+    }
+  }
+
+  void _onSession() {
+    if (session.audioDevicesEpoch == _deviceEpoch) return;
+    _deviceEpoch = session.audioDevicesEpoch;
     _refreshDevices();
   }
 
   Future<ClassifiedAudioOutputs> _refreshDevices() async {
     final list = await PlatformBridge.enumerate();
-    final classified = classifyAudioOutputs(list);
-    final current = session.speakerOutputId;
+    final classified = _usesMicRoute
+        ? classifyAudioInputsForOutput(list)
+        : classifyAudioOutputs(list);
+    final current = _currentId;
     if (current != null &&
         classified.externals.any((d) => d.deviceId == current)) {
       session.lastExternalOutputId = current;
@@ -930,8 +962,7 @@ class _VoiceOutputControlState extends State<_VoiceOutputControl> {
     return classified;
   }
 
-  AudioOutputRoute get _route =>
-      audioOutputRoute(session.speakerOutputId, _classified);
+  AudioOutputRoute get _route => audioOutputRoute(_currentId, _classified);
 
   IconData get _icon => _iconForRoute(_route);
 
@@ -942,44 +973,79 @@ class _VoiceOutputControlState extends State<_VoiceOutputControl> {
   }
 
   Future<void> _apply(String? id, ClassifiedAudioOutputs classified) async {
-    if (id != null && classified.externals.any((d) => d.deviceId == id)) {
+    if (id != null &&
+        !isDefaultAudioOutputId(id) &&
+        classified.externals.any((d) => d.deviceId == id)) {
       session.lastExternalOutputId = id;
+    }
+    if (_usesMicRoute) {
+      await session.applyMicForOutput(id);
+      return;
     }
     await session.applySpeakerDevice(id);
   }
 
   Future<void> _onTap() async {
     if (!mounted) return;
-    if (PlatformBridge.isIos || !PlatformBridge.canSetOutputDevice) {
+    if (!PlatformBridge.canSetOutputDevice && !_usesMicRoute) {
       _snack(context, 'audioOutputIos');
       return;
     }
-    final classified = await _refreshDevices();
-    if (!mounted) return;
+    var classified = _classified;
+    if (classified.realDevices.isEmpty) {
+      classified = await _refreshDevices();
+      if (!mounted) return;
+    }
+    if (_usesMicRoute && classified.realDevices.isEmpty) {
+      _snack(context, 'audioOutputIos');
+      return;
+    }
     final result = nextAudioOutput(
-      currentId: session.speakerOutputId,
+      currentId: _currentId,
       classified: classified,
       lastExternalId: session.lastExternalOutputId,
     );
     switch (result.kind) {
       case AudioOutputToggle.toDevice:
-        await _apply(result.deviceId, classified);
+        try {
+          await _apply(result.deviceId, classified);
+        } catch (_) {
+          if (mounted) _snack(context, 'audioOutputFailed');
+        }
       case AudioOutputToggle.noOtherDevices:
         _snack(context, 'noOtherAudioDevices');
       case AudioOutputToggle.pickDevice:
         await _showPicker(classified);
     }
+    unawaited(_refreshDevices());
   }
 
   Future<void> _onLongPress() async {
     if (!mounted) return;
-    if (PlatformBridge.isIos || !PlatformBridge.canSetOutputDevice) {
+    if (!PlatformBridge.canSetOutputDevice && !_usesMicRoute) {
       _snack(context, 'audioOutputIos');
       return;
     }
     final classified = await _refreshDevices();
     if (!mounted) return;
+    if (_usesMicRoute && classified.realDevices.isEmpty) {
+      _snack(context, 'audioOutputIos');
+      return;
+    }
     await _showPicker(classified);
+  }
+
+  bool _isCurrentDevice(String deviceId, String current) {
+    if (isDefaultAudioOutputId(deviceId)) {
+      return isDefaultAudioOutputId(current);
+    }
+    return deviceId == current;
+  }
+
+  String _deviceLabel(L10n l, MediaDeviceInfo d) {
+    if (d.label.isNotEmpty) return d.label;
+    if (isDefaultAudioOutputId(d.deviceId)) return l('bluetoothAudio');
+    return d.deviceId;
   }
 
   Future<void> _showPicker(ClassifiedAudioOutputs classified) async {
@@ -989,7 +1055,7 @@ class _VoiceOutputControlState extends State<_VoiceOutputControl> {
       return;
     }
     final l = L10n.of(context);
-    final current = session.speakerOutputId ?? '';
+    final current = _currentId ?? '';
     await showModalBottomSheet<void>(
       context: context,
       backgroundColor: context.p.sidebar,
@@ -1012,22 +1078,26 @@ class _VoiceOutputControlState extends State<_VoiceOutputControl> {
               for (final d in devices)
                 ListTile(
                   leading: Icon(
-                    _iconForRoute(routeForOutputLabel(d.label)),
-                    color: d.deviceId == current
+                    _iconForRoute(audioOutputRoute(d.deviceId, classified)),
+                    color: _isCurrentDevice(d.deviceId, current)
                         ? ctx.k.accent
                         : ctx.p.foreground,
                   ),
                   title: Text(
-                    d.label.isEmpty ? d.deviceId : d.label,
+                    _deviceLabel(l, d),
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(color: ctx.p.foreground),
                   ),
-                  trailing: d.deviceId == current
+                  trailing: _isCurrentDevice(d.deviceId, current)
                       ? Icon(Icons.check, color: ctx.k.accent)
                       : null,
-                  onTap: () {
+                  onTap: () async {
                     Navigator.pop(ctx);
-                    _apply(d.deviceId, classified);
+                    try {
+                      await _apply(d.deviceId, classified);
+                    } catch (_) {
+                      if (mounted) _snack(context, 'audioOutputFailed');
+                    }
                   },
                 ),
             ],

@@ -1,5 +1,7 @@
 import 'platform.dart';
 
+const kDefaultAudioOutputId = 'default';
+
 enum AudioOutputRoute { speaker, bluetooth, unknown }
 
 enum AudioOutputToggle { toDevice, noOtherDevices, pickDevice }
@@ -8,21 +10,37 @@ class ClassifiedAudioOutputs {
   const ClassifiedAudioOutputs({
     this.speakers = const [],
     this.externals = const [],
+    this.hasDefaultSink = false,
   });
 
   final List<MediaDeviceInfo> speakers;
   final List<MediaDeviceInfo> externals;
+  final bool hasDefaultSink;
 
   bool get hasSpeaker => speakers.isNotEmpty;
   bool get hasExternal => externals.isNotEmpty;
 
-  List<MediaDeviceInfo> get realDevices => [...speakers, ...externals];
+  /// Android Chrome lists Bluetooth as the system default, not a named sink.
+  bool get usesDefaultAsBluetooth =>
+      hasSpeaker && externals.isEmpty && hasDefaultSink;
+
+  List<MediaDeviceInfo> get realDevices {
+    if (!usesDefaultAsBluetooth) return [...speakers, ...externals];
+    return [
+      ...speakers,
+      MediaDeviceInfo(
+        deviceId: kDefaultAudioOutputId,
+        kind: 'audiooutput',
+        label: '',
+      ),
+    ];
+  }
 }
 
 class AudioOutputToggleResult {
   const AudioOutputToggleResult._(this.kind, this.deviceId);
 
-  const AudioOutputToggleResult.toDevice(String id)
+  const AudioOutputToggleResult.toDevice(String? id)
     : this._(AudioOutputToggle.toDevice, id);
 
   const AudioOutputToggleResult.noOtherDevices()
@@ -35,10 +53,24 @@ class AudioOutputToggleResult {
   final String? deviceId;
 }
 
+bool isDefaultAudioOutputId(String? id) {
+  final v = id?.trim().toLowerCase() ?? '';
+  return v.isEmpty || v == kDefaultAudioOutputId;
+}
+
+bool isDefaultAudioOutput(MediaDeviceInfo device) {
+  final id = device.deviceId.trim().toLowerCase();
+  final label = device.label.trim().toLowerCase();
+  if (id == 'communications' || label == 'communications') return false;
+  return id.isEmpty || id == kDefaultAudioOutputId || label == 'default';
+}
+
 bool isVirtualAudioOutput(MediaDeviceInfo device) {
   final id = device.deviceId.trim().toLowerCase();
   final label = device.label.trim().toLowerCase();
-  if (id.isEmpty || id == 'default' || id == 'communications') return true;
+  if (id.isEmpty || id == kDefaultAudioOutputId || id == 'communications') {
+    return true;
+  }
   if (label == 'default' || label == 'communications') return true;
   return false;
 }
@@ -64,18 +96,54 @@ AudioOutputRoute routeForOutputLabel(String label) {
   return AudioOutputRoute.bluetooth;
 }
 
-ClassifiedAudioOutputs classifyAudioOutputs(Iterable<MediaDeviceInfo> devices) {
+bool isBluetoothInputLabel(String label) {
+  final l = label.toLowerCase();
+  return l.contains('bluetooth') ||
+      l.contains('airpod') ||
+      l.contains('headset') ||
+      l.contains('hands-free') ||
+      l.contains('handsfree') ||
+      l.contains('hfp') ||
+      l.contains('a2dp') ||
+      l.contains('earbuds') ||
+      l.contains('earbud') ||
+      l.contains('headphones');
+}
+
+bool isBuiltInInputLabel(String label) {
+  if (isBluetoothInputLabel(label)) return false;
+  final l = label.toLowerCase();
+  return l.contains('built-in') ||
+      l.contains('iphone') ||
+      l.contains('ipad') ||
+      l.contains('internal') ||
+      l == 'microphone';
+}
+
+/// Older iOS has no audiooutput list. Output follows the selected mic, so
+/// built-in mics map to speaker and everything else to Bluetooth.
+ClassifiedAudioOutputs classifyAudioInputsForOutput(
+  Iterable<MediaDeviceInfo> devices,
+) {
   final real = devices
-      .where(
-        (d) =>
-            d.kind == 'audiooutput' &&
-            !isVirtualAudioOutput(d) &&
-            !isEarpieceOutputLabel(d.label),
-      )
+      .where((d) => d.kind == 'audioinput' && !isVirtualAudioOutput(d))
+      .toList();
+  return ClassifiedAudioOutputs(
+    speakers: real.where((d) => isBuiltInInputLabel(d.label)).toList(),
+    externals: real.where((d) => !isBuiltInInputLabel(d.label)).toList(),
+  );
+}
+
+ClassifiedAudioOutputs classifyAudioOutputs(Iterable<MediaDeviceInfo> devices) {
+  final outputs = devices.where((d) => d.kind == 'audiooutput').toList();
+  final hasDefaultSink = outputs.any(isDefaultAudioOutput);
+  final real = outputs
+      .where((d) => !isVirtualAudioOutput(d) && !isEarpieceOutputLabel(d.label))
       .toList();
   return ClassifiedAudioOutputs(
     speakers: real.where((d) => isSpeakerOutputLabel(d.label)).toList(),
     externals: real.where((d) => !isSpeakerOutputLabel(d.label)).toList(),
+    hasDefaultSink: hasDefaultSink,
   );
 }
 
@@ -83,8 +151,11 @@ AudioOutputRoute audioOutputRoute(
   String? storedId,
   ClassifiedAudioOutputs classified,
 ) {
-  final id = storedId?.trim() ?? '';
-  if (id.isEmpty) return AudioOutputRoute.unknown;
+  if (isDefaultAudioOutputId(storedId)) {
+    if (classified.usesDefaultAsBluetooth) return AudioOutputRoute.bluetooth;
+    return AudioOutputRoute.unknown;
+  }
+  final id = storedId!.trim();
   if (classified.speakers.any((d) => d.deviceId == id)) {
     return AudioOutputRoute.speaker;
   }
@@ -108,6 +179,9 @@ AudioOutputToggleResult nextAudioOutput({
       final external = preferredExternal(classified, lastExternalId);
       if (external != null) {
         return AudioOutputToggleResult.toDevice(external.deviceId);
+      }
+      if (classified.usesDefaultAsBluetooth) {
+        return const AudioOutputToggleResult.toDevice(null);
       }
       return const AudioOutputToggleResult.noOtherDevices();
     case AudioOutputRoute.bluetooth:
@@ -136,7 +210,7 @@ MediaDeviceInfo? preferredExternal(
   String? lastExternalId,
 ) {
   final last = lastExternalId?.trim() ?? '';
-  if (last.isNotEmpty) {
+  if (last.isNotEmpty && !isDefaultAudioOutputId(last)) {
     for (final d in classified.externals) {
       if (d.deviceId == last) return d;
     }

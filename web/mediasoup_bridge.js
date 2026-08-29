@@ -166,6 +166,9 @@
     _volumes: {},
     _keepAlive: null,
     _dummyTracks: {},
+    _outputDevice: "",
+    _relayDest: null,
+    _relayEl: null,
     _boundMedia: {},
     _bindTimers: {},
     _sendConnState: "",
@@ -227,9 +230,16 @@
     },
 
     _applyCtxSink() {
+      return this._applyCtxSinkAsync().catch(() => {});
+    },
+
+    async _applyCtxSinkAsync() {
       const ctx = this._audioCtx;
       if (!ctx || typeof ctx.setSinkId !== "function") return;
-      ctx.setSinkId(this._outputDevice || "").catch(() => {});
+      if (ctx.state === "suspended" || ctx.state === "interrupted") {
+        await ctx.resume().catch(() => {});
+      }
+      await ctx.setSinkId(this._outputDevice || "");
     },
 
     _startKeepAlive() {
@@ -242,7 +252,12 @@
         gain.gain.value = 0.0001;
         osc.frequency.value = 20;
         osc.connect(gain);
-        gain.connect(ctx.destination);
+        if (this._usesSinkRelay()) {
+          this._ensureSinkRelay();
+          gain.connect(this._relayDest);
+        } else {
+          gain.connect(ctx.destination);
+        }
         osc.onended = () => {
           if (this._keepAlive && this._keepAlive.osc === osc) {
             this._keepAlive = null;
@@ -274,8 +289,84 @@
       return s.endsWith(":screen_audio") || s.endsWith(":external_audio");
     },
 
+    _hasAudioContextSink() {
+      try {
+        const Ctx = window.AudioContext || window.webkitAudioContext;
+        return !!(Ctx && Ctx.prototype && typeof Ctx.prototype.setSinkId === "function");
+      } catch (_) {
+        return false;
+      }
+    },
+
+    _hasMediaSink() {
+      try {
+        const proto = window.HTMLMediaElement && HTMLMediaElement.prototype;
+        return !!(proto && typeof proto.setSinkId === "function");
+      } catch (_) {
+        return false;
+      }
+    },
+
+    _usesSinkRelay() {
+      return this.isIos() && this._hasMediaSink();
+    },
+
     _usesHtmlAudioPlayback() {
-      return this.isIos();
+      if (this._usesSinkRelay()) return false;
+      if (this.isIos()) return true;
+      return this._hasMediaSink() && !this._hasAudioContextSink();
+    },
+
+    _ensureSinkRelay() {
+      if (!this._usesSinkRelay()) return null;
+      const ctx = this._ensureAudioCtx();
+      if (!this._relayDest) {
+        this._relayDest = ctx.createMediaStreamDestination();
+      }
+      if (!this._relayEl) {
+        const el = document.createElement("audio");
+        el.id = "kurier-audio-relay";
+        el.autoplay = true;
+        el.playsInline = true;
+        el.setAttribute("playsinline", "true");
+        el.setAttribute("webkit-playsinline", "true");
+        el.style.cssText =
+          "position:fixed;left:0;top:0;width:1px;height:1px;opacity:0.01;pointer-events:none;z-index:-1";
+        el.srcObject = this._relayDest.stream;
+        document.body.appendChild(el);
+        this._relayEl = el;
+      }
+      this._playMedia(this._relayEl);
+      this._applyRelaySink();
+      return this._relayDest;
+    },
+
+    _applyRelaySink() {
+      const el = this._relayEl;
+      if (!el || typeof el.setSinkId !== "function") return Promise.resolve();
+      return el.setSinkId(this._outputDevice || "").catch(() => {});
+    },
+
+    _teardownSinkRelay() {
+      const el = this._relayEl;
+      this._relayEl = null;
+      this._relayDest = null;
+      if (!el) return;
+      try {
+        el.pause();
+      } catch (_) {}
+      try {
+        el.srcObject = null;
+      } catch (_) {}
+      try {
+        el.remove();
+      } catch (_) {}
+    },
+
+    _resumeSinkRelay() {
+      if (!this._usesSinkRelay()) return;
+      this._ensureSinkRelay();
+      if (this._relayEl) this._playMedia(this._relayEl);
     },
 
     _audioHost(kind) {
@@ -311,7 +402,12 @@
         const initial = typeof stored === "number" ? stored : this._isPlaybackKey(key) ? 0 : 1;
         gain.gain.value = initial;
         source.connect(gain);
-        gain.connect(ctx.destination);
+        if (this._usesSinkRelay()) {
+          this._ensureSinkRelay();
+          gain.connect(this._relayDest);
+        } else {
+          gain.connect(ctx.destination);
+        }
         this._gains[key] = { source: source, gain: gain };
         return true;
       } catch (err) {
@@ -744,13 +840,91 @@
     },
 
     setOutputDevice(deviceId) {
-      this._outputDevice = deviceId || "";
-      this._applyCtxSink();
-      const nodes = document.querySelectorAll("audio, video");
-      nodes.forEach((el) => this._applySink(el));
-      if (global.KurierSounds && typeof global.KurierSounds.setOutputDevice === "function") {
-        global.KurierSounds.setOutputDevice(this._outputDevice);
-      }
+      return this._run(async () => {
+        this._outputDevice = deviceId || "";
+        this._thawFromGesture();
+        const htmlPlayback = this._usesHtmlAudioPlayback();
+        const relay = this._usesSinkRelay();
+        let ctxError = null;
+        if (relay) {
+          try {
+            this._ensureSinkRelay();
+            await this._applyRelaySink();
+            this._reattachVoiceGraphs(true);
+          } catch (err) {
+            ctxError = err;
+          }
+        } else if (!htmlPlayback) {
+          try {
+            this._ensureAudioCtx();
+            await this._applyCtxSinkAsync();
+            this._reattachVoiceGraphs(true);
+          } catch (err) {
+            ctxError = err;
+          }
+        }
+        const nodes = document.querySelectorAll("audio, video");
+        const mediaEls = [...nodes].filter((el) => el !== this._relayEl);
+        if (htmlPlayback) {
+          await Promise.all(
+            mediaEls.map((el) =>
+              el.tagName === "AUDIO" ? this._applySink(el) : this._applySink(el).catch(() => {})
+            )
+          );
+        } else {
+          await Promise.all(mediaEls.map((el) => this._applySink(el).catch(() => {})));
+        }
+        if (relay) await this._applyRelaySink();
+        if (global.KurierSounds && typeof global.KurierSounds.setOutputDevice === "function") {
+          try {
+            const sound = global.KurierSounds.setOutputDevice(this._outputDevice);
+            if (sound && typeof sound.then === "function") await sound.catch(() => {});
+          } catch (_) {}
+        }
+        if (ctxError && (relay || !htmlPlayback)) throw ctxError;
+        return "";
+      });
+    },
+
+    async replaceMicDevice(deviceId, constraintsJson) {
+      return this._run(async () => {
+        const extra = parseJson(constraintsJson);
+        let stream;
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({
+            audio: this._audioConstraints(deviceId, extra),
+          });
+        } catch (err) {
+          if (!deviceId) throw err;
+          stream = await navigator.mediaDevices.getUserMedia({
+            audio: this._audioConstraints(null, extra),
+          });
+        }
+        const track = stream.getAudioTracks()[0];
+        if (!track) {
+          stream.getTracks().forEach((t) => {
+            try {
+              t.stop();
+            } catch (_) {}
+          });
+          throw new Error("no mic track");
+        }
+        const producer = this.producers.audio;
+        try {
+          if (producer && !producer.closed && typeof producer.replaceTrack === "function") {
+            await producer.replaceTrack({ track });
+          }
+          this._setMicStream(stream);
+        } catch (err) {
+          stream.getTracks().forEach((t) => {
+            try {
+              t.stop();
+            } catch (_) {}
+          });
+          throw err;
+        }
+        return "";
+      });
     },
 
     setCameraDevice(deviceId) {
@@ -758,8 +932,8 @@
     },
 
     _applySink(el) {
-      if (!el || typeof el.setSinkId !== "function") return;
-      el.setSinkId(this._outputDevice || "").catch(() => {});
+      if (!el || typeof el.setSinkId !== "function") return Promise.resolve();
+      return el.setSinkId(this._outputDevice || "");
     },
 
     _vp8Codec() {
@@ -1006,18 +1180,18 @@
       el.srcObject = stream;
       if (kind === "audio") {
         this._stopDummyTracks(key);
-        if (!htmlAudio) {
+        if (!htmlAudio && !this._usesSinkRelay()) {
           const dummy = stream.getAudioTracks().map((t) => t.clone());
           this._dummyTracks[key] = dummy;
           el.srcObject = dummy.length ? new MediaStream(dummy) : stream;
         }
       }
-      this._applySink(el);
+      this._applySink(el).catch(() => {});
       const playbackStream = this._isPlaybackKey(key);
       const usedGraph =
         kind === "audio" && !htmlAudio ? this._attachVoiceGraph(key, stream) : false;
       if (usedGraph) {
-        el.muted = false;
+        el.muted = this._usesSinkRelay();
         el.volume = 0;
       } else if (kind === "audio") {
         el.muted = playbackStream || this._volumes[key] === 0;
@@ -1044,7 +1218,7 @@
       if (!el) return;
       if (graph && !this._usesHtmlAudioPlayback()) {
         el.volume = 0;
-        el.muted = false;
+        el.muted = this._usesSinkRelay();
       } else {
         el.volume = v;
         el.muted = v === 0;
@@ -1444,6 +1618,7 @@
       Object.keys(this.producers).forEach((k) => this.closeProducer(k));
       Object.keys(this.consumers).forEach((k) => this.closeConsumer(k));
       this._stopKeepAlive();
+      this._teardownSinkRelay();
       this._gains = {};
       this._volumes = {};
       this._dummyTracks = {};
@@ -1534,17 +1709,7 @@
     },
 
     canSetOutputDevice() {
-      try {
-        const Ctx = window.AudioContext || window.webkitAudioContext;
-        const ctxProto = Ctx && Ctx.prototype;
-        const mediaProto = window.HTMLMediaElement && HTMLMediaElement.prototype;
-        return !!(
-          (ctxProto && typeof ctxProto.setSinkId === "function") ||
-          (mediaProto && typeof mediaProto.setSinkId === "function")
-        );
-      } catch (_) {
-        return false;
-      }
+      return this._hasAudioContextSink() || this._hasMediaSink();
     },
 
     _thawFromGesture() {
@@ -1682,6 +1847,7 @@
           this._startResumeLoop();
         }
         this._reattachVoiceGraphs(false);
+        this._resumeSinkRelay();
         document.querySelectorAll('[id^="kurier-media-"]').forEach((el) => {
           this._playMedia(el);
         });
@@ -1700,6 +1866,14 @@
       { capture: true, passive: true }
     );
   });
+
+  try {
+    if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
+      navigator.mediaDevices.addEventListener("devicechange", () => {
+        KurierMediasoup._emit("devicechange", "");
+      });
+    }
+  } catch (_) {}
 
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") {

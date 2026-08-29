@@ -40,6 +40,51 @@
 
   const isDesktop = () => !isIos() && !isAndroid();
 
+  const hasMediaSink = () => {
+    try {
+      const proto = window.HTMLMediaElement && HTMLMediaElement.prototype;
+      return !!(proto && typeof proto.setSinkId === "function");
+    } catch (_) {
+      return false;
+    }
+  };
+
+  const usesSoundRelay = () => isIos() && hasMediaSink();
+
+  let relayDest = null;
+  let relayEl = null;
+
+  const ensureSoundRelay = () => {
+    const ctx = getAudioContext();
+    if (!ctx || !usesSoundRelay()) return null;
+    if (!relayDest) relayDest = ctx.createMediaStreamDestination();
+    if (!relayEl) {
+      const el = document.createElement("audio");
+      el.id = "kurier-sounds-relay";
+      el.autoplay = true;
+      el.playsInline = true;
+      el.setAttribute("playsinline", "true");
+      el.setAttribute("webkit-playsinline", "true");
+      el.style.display = "none";
+      el.srcObject = relayDest.stream;
+      document.body.appendChild(el);
+      relayEl = el;
+    }
+    relayEl.play().catch(() => {});
+    if (typeof relayEl.setSinkId === "function") {
+      relayEl.setSinkId(outputDevice || "").catch(() => {});
+    }
+    return relayDest;
+  };
+
+  const soundDestination = () => {
+    if (usesSoundRelay()) {
+      const dest = ensureSoundRelay();
+      if (dest) return dest;
+    }
+    return audioCtx.destination;
+  };
+
   const createAudioContext = () => {
     const Ctor = window.AudioContext || window.webkitAudioContext;
     if (!Ctor) return null;
@@ -49,29 +94,45 @@
   const getAudioContext = () => {
     if (hasAudioContext && audioCtx.state === "closed") {
       hasAudioContext = false;
+      relayDest = null;
+      if (relayEl) {
+        try {
+          relayEl.pause();
+        } catch (_) {}
+        try {
+          relayEl.remove();
+        } catch (_) {}
+        relayEl = null;
+      }
     }
     if (!hasAudioContext) {
       const ctx = createAudioContext();
       if (!ctx) return null;
       audioCtx = ctx;
       hasAudioContext = true;
-      applySink(ctx);
+      applySink(ctx).catch(() => {});
     }
     return audioCtx;
   };
 
-  const applySink = (ctx) => {
+  const applySink = async (ctx) => {
+    if (usesSoundRelay()) {
+      ensureSoundRelay();
+      return;
+    }
+    const tasks = [];
     if (ctx && typeof ctx.setSinkId === "function") {
-      ctx.setSinkId(outputDevice || "").catch(() => {});
+      tasks.push(ctx.setSinkId(outputDevice || "").catch(() => {}));
     }
     if (silentEl && typeof silentEl.setSinkId === "function") {
-      silentEl.setSinkId(outputDevice || "").catch(() => {});
+      tasks.push(silentEl.setSinkId(outputDevice || "").catch(() => {}));
     }
+    if (tasks.length) await Promise.all(tasks);
   };
 
-  const setOutputDevice = (deviceId) => {
+  const setOutputDevice = async (deviceId) => {
     outputDevice = deviceId || "";
-    applySink(hasAudioContext ? audioCtx : null);
+    await applySink(hasAudioContext ? audioCtx : null);
   };
 
   const ensureAudioContextRunning = async () => {
@@ -118,7 +179,7 @@
     const osc = createOsc("sine", 600);
     const gain = createGain(0.05);
     gain.gain.exponentialRampToValueAtTime(0.0001, now() + 0.05);
-    osc.connect(gain).connect(audioCtx.destination);
+    osc.connect(gain).connect(soundDestination());
     osc.start();
     osc.stop(now() + 0.05);
   };
@@ -127,7 +188,7 @@
     const osc = createOsc("sine", 750);
     const gain = createGain(0.04);
     gain.gain.exponentialRampToValueAtTime(0.0001, now() + 0.04);
-    osc.connect(gain).connect(audioCtx.destination);
+    osc.connect(gain).connect(soundDestination());
     osc.start();
     osc.stop(now() + 0.04);
   };
@@ -151,11 +212,11 @@
         const harmonicOsc = createOsc("triangle", 784);
         const harmonicGain = createGain(0.05);
         harmonicGain.gain.exponentialRampToValueAtTime(0.0001, endAt);
-        harmonicOsc.connect(harmonicGain).connect(audioCtx.destination);
+        harmonicOsc.connect(harmonicGain).connect(soundDestination());
         harmonicOsc.start(startAt + 0.02);
         harmonicOsc.stop(endAt);
       }
-      osc.connect(gain).connect(audioCtx.destination);
+      osc.connect(gain).connect(soundDestination());
       osc.start(startAt);
       osc.stop(endAt);
     });
@@ -170,7 +231,7 @@
       const osc = createOsc("sine", freq);
       const gain = createGain(g);
       gain.gain.exponentialRampToValueAtTime(0.0001, now() + 0.25);
-      osc.connect(gain).connect(audioCtx.destination);
+      osc.connect(gain).connect(soundDestination());
       osc.start();
       osc.stop(now() + 0.25);
     });
@@ -181,7 +242,7 @@
       const osc = createOsc("triangle", freq);
       const gain = createGain(g);
       gain.gain.exponentialRampToValueAtTime(0.0001, now() + 0.3);
-      osc.connect(gain).connect(audioCtx.destination);
+      osc.connect(gain).connect(soundDestination());
       osc.start(now() + 0.08);
       osc.stop(now() + 0.3);
     });
@@ -196,14 +257,14 @@
       const osc = createOsc("sine", freq);
       const gain = createGain(g);
       gain.gain.exponentialRampToValueAtTime(0.0001, now() + 0.3);
-      osc.connect(gain).connect(audioCtx.destination);
+      osc.connect(gain).connect(soundDestination());
       osc.start();
       osc.stop(now() + 0.3);
     });
     const osc2 = createOsc("triangle", 880);
     const gain2 = createGain(0.04);
     gain2.gain.exponentialRampToValueAtTime(0.0001, now() + 0.25);
-    osc2.connect(gain2).connect(audioCtx.destination);
+    osc2.connect(gain2).connect(soundDestination());
     osc2.start(now() + 0.05);
     osc2.stop(now() + 0.3);
   };
@@ -212,7 +273,7 @@
     const osc = createOsc("sine", 350);
     const gain = createGain(0.05);
     gain.gain.exponentialRampToValueAtTime(0.0001, now() + 0.06);
-    osc.connect(gain).connect(audioCtx.destination);
+    osc.connect(gain).connect(soundDestination());
     osc.start();
     osc.stop(now() + 0.06);
   };
@@ -221,7 +282,7 @@
     const osc = createOsc("sine", 500);
     const gain = createGain(0.05);
     gain.gain.exponentialRampToValueAtTime(0.0001, now() + 0.06);
-    osc.connect(gain).connect(audioCtx.destination);
+    osc.connect(gain).connect(soundDestination());
     osc.start();
     osc.stop(now() + 0.06);
   };
@@ -230,7 +291,7 @@
     const osc = createOsc("sine", 450);
     const gain = createGain(0.05);
     gain.gain.exponentialRampToValueAtTime(0.0001, now() + 0.06);
-    osc.connect(gain).connect(audioCtx.destination);
+    osc.connect(gain).connect(soundDestination());
     osc.start();
     osc.stop(now() + 0.06);
   };
@@ -239,7 +300,7 @@
     const osc = createOsc("sine", 650);
     const gain = createGain(0.05);
     gain.gain.exponentialRampToValueAtTime(0.0001, now() + 0.06);
-    osc.connect(gain).connect(audioCtx.destination);
+    osc.connect(gain).connect(soundDestination());
     osc.start();
     osc.stop(now() + 0.06);
   };
@@ -248,13 +309,13 @@
     const osc1 = createOsc("sine", 700);
     const gain1 = createGain(0.07);
     gain1.gain.exponentialRampToValueAtTime(0.0001, now() + 0.12);
-    osc1.connect(gain1).connect(audioCtx.destination);
+    osc1.connect(gain1).connect(soundDestination());
     osc1.start();
     osc1.stop(now() + 0.12);
     const osc2 = createOsc("sine", 900);
     const gain2 = createGain(0.04);
     gain2.gain.exponentialRampToValueAtTime(0.0001, now() + 0.1);
-    osc2.connect(gain2).connect(audioCtx.destination);
+    osc2.connect(gain2).connect(soundDestination());
     osc2.start(now() + 0.04);
     osc2.stop(now() + 0.12);
   };
@@ -264,7 +325,7 @@
     const gain1 = createGain(0.07);
     osc1.frequency.exponentialRampToValueAtTime(500, now() + 0.12);
     gain1.gain.exponentialRampToValueAtTime(0.0001, now() + 0.14);
-    osc1.connect(gain1).connect(audioCtx.destination);
+    osc1.connect(gain1).connect(soundDestination());
     osc1.start();
     osc1.stop(now() + 0.14);
   };
@@ -279,14 +340,14 @@
       const osc = createOsc("sine", freq);
       const gain = createGain(0.08);
       gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.1);
-      osc.connect(gain).connect(audioCtx.destination);
+      osc.connect(gain).connect(soundDestination());
       osc.start(t);
       osc.stop(t + 0.1);
     });
     const osc2 = createOsc("triangle", 1200);
     const gain2 = createGain(0.03);
     gain2.gain.exponentialRampToValueAtTime(0.0001, now() + 0.2);
-    osc2.connect(gain2).connect(audioCtx.destination);
+    osc2.connect(gain2).connect(soundDestination());
     osc2.start(now() + 0.08);
     osc2.stop(now() + 0.22);
   };
@@ -296,14 +357,14 @@
     const gain1 = createGain(0.08);
     osc1.frequency.exponentialRampToValueAtTime(550, now() + 0.18);
     gain1.gain.exponentialRampToValueAtTime(0.0001, now() + 0.2);
-    osc1.connect(gain1).connect(audioCtx.destination);
+    osc1.connect(gain1).connect(soundDestination());
     osc1.start();
     osc1.stop(now() + 0.2);
     const osc2 = createOsc("triangle", 1100);
     const gain2 = createGain(0.03);
     osc2.frequency.exponentialRampToValueAtTime(700, now() + 0.18);
     gain2.gain.exponentialRampToValueAtTime(0.0001, now() + 0.2);
-    osc2.connect(gain2).connect(audioCtx.destination);
+    osc2.connect(gain2).connect(soundDestination());
     osc2.start(now() + 0.05);
     osc2.stop(now() + 0.2);
   };
@@ -318,7 +379,7 @@
       const osc = createOsc("sine", freq);
       const gain = createGain(g);
       gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.2);
-      osc.connect(gain).connect(audioCtx.destination);
+      osc.connect(gain).connect(soundDestination());
       osc.start(t);
       osc.stop(t + 0.2);
     });
@@ -334,7 +395,7 @@
       const osc = createOsc("sine", freq);
       const gain = createGain(g);
       gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.2);
-      osc.connect(gain).connect(audioCtx.destination);
+      osc.connect(gain).connect(soundDestination());
       osc.start(t);
       osc.stop(t + 0.2);
     });
@@ -350,14 +411,14 @@
       const osc = createOsc("sine", freq);
       const gain = createGain(0.06);
       gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.1);
-      osc.connect(gain).connect(audioCtx.destination);
+      osc.connect(gain).connect(soundDestination());
       osc.start(t);
       osc.stop(t + 0.1);
     });
     const osc2 = createOsc("triangle", 1200);
     const gain2 = createGain(0.02);
     gain2.gain.exponentialRampToValueAtTime(0.0001, now() + 0.2);
-    osc2.connect(gain2).connect(audioCtx.destination);
+    osc2.connect(gain2).connect(soundDestination());
     osc2.start(now() + 0.08);
     osc2.stop(now() + 0.22);
   };
@@ -367,14 +428,14 @@
     const gain1 = createGain(0.06);
     osc1.frequency.exponentialRampToValueAtTime(550, now() + 0.18);
     gain1.gain.exponentialRampToValueAtTime(0.0001, now() + 0.2);
-    osc1.connect(gain1).connect(audioCtx.destination);
+    osc1.connect(gain1).connect(soundDestination());
     osc1.start();
     osc1.stop(now() + 0.2);
     const osc2 = createOsc("triangle", 1100);
     const gain2 = createGain(0.02);
     osc2.frequency.exponentialRampToValueAtTime(700, now() + 0.18);
     gain2.gain.exponentialRampToValueAtTime(0.0001, now() + 0.2);
-    osc2.connect(gain2).connect(audioCtx.destination);
+    osc2.connect(gain2).connect(soundDestination());
     osc2.start(now() + 0.05);
     osc2.stop(now() + 0.2);
   };
@@ -477,7 +538,7 @@
       document.body.appendChild(el);
       silentEl = el;
       el.play().catch(() => {});
-      applySink(hasAudioContext ? audioCtx : null);
+      applySink(hasAudioContext ? audioCtx : null).catch(() => {});
     } catch (_) {}
   };
 

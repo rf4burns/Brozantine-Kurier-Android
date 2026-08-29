@@ -51,7 +51,11 @@ class PlatformBridge {
   static double micTestLevel() => 0;
   static Future<void> startVideoPreview({String? deviceId}) async {}
   static void stopVideoPreview() {}
-  static void setOutputDevice(String? deviceId) {}
+  static Future<void> setOutputDevice(String? deviceId) async {}
+  static Future<void> replaceMicDevice({
+    String? deviceId,
+    Map<String, dynamic>? audioConstraints,
+  }) async {}
   static void setCameraDevice(String? deviceId) {}
   static Future<void> getDisplayMedia({bool withAudio = false}) async {}
   static Future<String> produce(String kind, {bool simulcast = false}) async =>

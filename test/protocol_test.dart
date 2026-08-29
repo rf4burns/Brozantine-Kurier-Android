@@ -232,6 +232,8 @@ void main() {
       ]);
       expect(classified.speakers.map((d) => d.deviceId), ['spk']);
       expect(classified.externals, isEmpty);
+      expect(classified.hasDefaultSink, isTrue);
+      expect(classified.usesDefaultAsBluetooth, isTrue);
     });
 
     test('treats speakerphone and built-in labels as speaker', () {
@@ -306,7 +308,105 @@ void main() {
 
     test('reports no other devices when only speaker is present', () {
       final classified = classifyAudioOutputs([out('spk', 'Speaker')]);
+      expect(classified.hasDefaultSink, isFalse);
       final result = nextAudioOutput(currentId: 'spk', classified: classified);
+      expect(result.kind, AudioOutputToggle.noOtherDevices);
+    });
+
+    test('toggles speaker to default bluetooth then back to speaker', () {
+      final classified = classifyAudioOutputs([
+        out('default', 'Default'),
+        out('spk', 'Speakerphone'),
+      ]);
+      expect(classified.usesDefaultAsBluetooth, isTrue);
+      expect(audioOutputRoute(null, classified), AudioOutputRoute.bluetooth);
+      expect(
+        audioOutputRoute('default', classified),
+        AudioOutputRoute.bluetooth,
+      );
+
+      final toSpeaker = nextAudioOutput(
+        currentId: null,
+        classified: classified,
+      );
+      expect(toSpeaker.kind, AudioOutputToggle.toDevice);
+      expect(toSpeaker.deviceId, 'spk');
+
+      final toDefault = nextAudioOutput(
+        currentId: 'spk',
+        classified: classified,
+      );
+      expect(toDefault.kind, AudioOutputToggle.toDevice);
+      expect(toDefault.deviceId, isNull);
+    });
+
+    test('prefers labeled bluetooth over default', () {
+      final classified = classifyAudioOutputs([
+        out('default', 'Default'),
+        out('spk', 'Speaker'),
+        out('buds', 'AirPods'),
+      ]);
+      expect(classified.usesDefaultAsBluetooth, isFalse);
+      expect(classified.externals.map((d) => d.deviceId), ['buds']);
+      final result = nextAudioOutput(currentId: 'spk', classified: classified);
+      expect(result.kind, AudioOutputToggle.toDevice);
+      expect(result.deviceId, 'buds');
+    });
+
+    MediaDeviceInfo input(String id, String label) =>
+        MediaDeviceInfo(deviceId: id, kind: 'audioinput', label: label);
+
+    test('maps iOS built-in mics to speaker and headsets to bluetooth', () {
+      final classified = classifyAudioInputsForOutput([
+        input('phone', 'iPhone Microphone'),
+        input('buds', 'AirPods'),
+        input('car', 'BMW Hands-Free'),
+        out('spk', 'Speaker'),
+      ]);
+      expect(classified.speakers.map((d) => d.deviceId), ['phone']);
+      expect(classified.externals.map((d) => d.deviceId), ['buds', 'car']);
+      expect(classified.usesDefaultAsBluetooth, isFalse);
+    });
+
+    test('toggles iOS mic-followed output from speaker to last headset', () {
+      final classified = classifyAudioInputsForOutput([
+        input('phone', 'iPhone Microphone'),
+        input('buds', 'AirPods'),
+        input('car', 'Car Hands-Free'),
+      ]);
+      expect(
+        audioOutputRoute('phone', classified),
+        AudioOutputRoute.speaker,
+      );
+      expect(
+        audioOutputRoute('buds', classified),
+        AudioOutputRoute.bluetooth,
+      );
+
+      final toLast = nextAudioOutput(
+        currentId: 'phone',
+        classified: classified,
+        lastExternalId: 'car',
+      );
+      expect(toLast.kind, AudioOutputToggle.toDevice);
+      expect(toLast.deviceId, 'car');
+
+      final toSpeaker = nextAudioOutput(
+        currentId: 'car',
+        classified: classified,
+      );
+      expect(toSpeaker.kind, AudioOutputToggle.toDevice);
+      expect(toSpeaker.deviceId, 'phone');
+    });
+
+    test('reports no other iOS output when only the built-in mic exists', () {
+      final classified = classifyAudioInputsForOutput([
+        input('phone', 'iPhone Microphone'),
+      ]);
+      final result = nextAudioOutput(
+        currentId: 'phone',
+        classified: classified,
+      );
       expect(result.kind, AudioOutputToggle.noOtherDevices);
     });
   });
