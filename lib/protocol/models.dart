@@ -101,7 +101,8 @@ class KurierFile {
       createdAt: asInt(map['createdAt']) ?? 0,
       accessToken: _fileToken(map),
       accessTokenExpiresAt:
-          asInt(map['_accessTokenExpiresAt']) ?? asInt(map['accessTokenExpiresAt']),
+          asInt(map['_accessTokenExpiresAt']) ??
+          asInt(map['accessTokenExpiresAt']),
     );
   }
 
@@ -223,6 +224,7 @@ class KurierUser {
     this.banner,
     this.roleIds = const [],
     this.status = 'offline',
+    this.mobile = false,
     this.banned = false,
     this.deleted = false,
     this.serverMuted = false,
@@ -248,6 +250,7 @@ class KurierUser {
   KurierFile? banner;
   List<int> roleIds;
   String status;
+  bool mobile;
   bool banned;
   bool deleted;
   bool serverMuted;
@@ -326,6 +329,9 @@ class KurierUser {
       status: json.containsKey('status')
           ? '${json['status'] ?? 'offline'}'
           : (existing?.status ?? 'offline'),
+      mobile: json.containsKey('mobile')
+          ? asBool(json['mobile'])
+          : (existing?.mobile ?? false),
       banned: json.containsKey('banned')
           ? asBool(json['banned'])
           : (existing?.banned ?? false),
@@ -365,6 +371,7 @@ class KurierUser {
     String? bio,
     String? profileColor,
     String? status,
+    bool? mobile,
     bool? banned,
     bool? deleted,
     bool? serverMuted,
@@ -389,6 +396,7 @@ class KurierUser {
       banner: banner ?? this.banner,
       roleIds: roleIds ?? this.roleIds,
       status: status ?? this.status,
+      mobile: mobile ?? this.mobile,
       banned: banned ?? this.banned,
       deleted: deleted ?? this.deleted,
       serverMuted: serverMuted ?? this.serverMuted,
@@ -1049,18 +1057,26 @@ Map<String, ChannelPerms> parseChannelPermissions(dynamic raw) {
 }
 
 class SavedHost {
-  SavedHost({required this.host, this.name, this.token, this.autoLogin = true});
+  SavedHost({
+    required this.host,
+    this.name,
+    this.token,
+    this.autoLogin = true,
+    this.klipy,
+  });
 
   final String host;
   String? name;
   String? token;
   bool autoLogin;
+  String? klipy;
 
   Map<String, dynamic> toJson() => {
     'host': host,
     'name': name,
     'token': token,
     'autoLogin': autoLogin,
+    if (klipy != null && klipy!.isNotEmpty) 'klipy': klipy,
   };
 
   factory SavedHost.fromJson(Map<String, dynamic> json) {
@@ -1069,6 +1085,7 @@ class SavedHost {
       name: json['name'] as String?,
       token: json['token'] as String?,
       autoLogin: asBool(json['autoLogin'], true),
+      klipy: asOptionalString(json['klipy']),
     );
   }
 }

@@ -5,16 +5,19 @@ import 'dart:typed_data';
 
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
-import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:local_auth/local_auth.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:receive_sharing_intent/receive_sharing_intent.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../protocol/native_channels.dart';
 import '../protocol/trpc_client.dart';
+import 'push_inbox.dart';
+import 'push_kind.dart';
 
 class PendingShare {
   const PendingShare({this.paths = const [], this.text});
@@ -33,17 +36,25 @@ const _jwtKey = 'kurier.jwt';
 const _originKey = 'kurier.origin';
 const _lockKey = 'kurier.appLock';
 const _fcmKey = 'kurier.fcmToken';
+const _inboxKey = 'kurier.pushInbox.v1';
+
+final _inbox = PushInbox();
+bool _inboxLoaded = false;
 
 final _notifications = FlutterLocalNotificationsPlugin();
 final _auth = LocalAuthentication();
 
 void Function(String action)? onVoiceNotificationAction;
+void Function(PendingDeepLink link)? onAndroidNotificationOpened;
 
 PendingShare? _pendingShare;
 PendingDeepLink? _pendingDeepLink;
 StreamSubscription? _shareSub;
 bool _firebaseReady = false;
 bool _appLockEnabled = false;
+bool _appForeground = true;
+String _keepAliveServer = 'Kurier';
+bool _keepAlive = false;
 
 @pragma('vm:entry-point')
 Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
@@ -57,6 +68,8 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
     const InitializationSettings(android: androidInit),
     onDidReceiveBackgroundNotificationResponse: notificationTapBackground,
   );
+  await _ensurePushChannels(plugin);
+  await _ensureInboxLoaded();
   final data = Map<String, dynamic>.from(message.data);
   final title =
       message.notification?.title ?? data['title']?.toString() ?? 'Kurier';
@@ -69,25 +82,21 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   );
 }
 
-@pragma('vm:entry-point')
-void startKurierVoiceTask() {
-  FlutterForegroundTask.setTaskHandler(_VoiceTaskHandler());
+Future<void> _ensureInboxLoaded() async {
+  if (_inboxLoaded) return;
+  _inboxLoaded = true;
+  try {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_inboxKey);
+    if (raw != null && raw.isNotEmpty) _inbox.loadEncoded(raw);
+  } catch (_) {}
 }
 
-class _VoiceTaskHandler extends TaskHandler {
-  @override
-  Future<void> onStart(DateTime timestamp, TaskStarter starter) async {}
-
-  @override
-  void onRepeatEvent(DateTime timestamp) {}
-
-  @override
-  Future<void> onDestroy(DateTime timestamp, bool isTimeout) async {}
-
-  @override
-  void onNotificationButtonPressed(String id) {
-    FlutterForegroundTask.sendDataToMain({'action': id});
-  }
+Future<void> _persistInbox() async {
+  try {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_inboxKey, _inbox.encode());
+  } catch (_) {}
 }
 
 @pragma('vm:entry-point')
@@ -107,32 +116,197 @@ const _messageActions = <AndroidNotificationAction>[
   AndroidNotificationAction('mark_read', 'Mark as read'),
 ];
 
+Future<void> _ensurePushChannels([
+  FlutterLocalNotificationsPlugin? plugin,
+]) async {
+  final androidPlugin = (plugin ?? _notifications)
+      .resolvePlatformSpecificImplementation<
+        AndroidFlutterLocalNotificationsPlugin
+      >();
+  if (androidPlugin == null) return;
+  for (final kind in PushKind.values) {
+    await androidPlugin.createNotificationChannel(
+      AndroidNotificationChannel(
+        kind.androidChannelId,
+        kind.androidChannelName,
+        importance: Importance.max,
+      ),
+    );
+  }
+}
+
 Future<void> _showMessageNotification({
   required String title,
   required String body,
   required Map<String, dynamic> data,
   FlutterLocalNotificationsPlugin? plugin,
+  bool silent = false,
 }) async {
+  await _ensureInboxLoaded();
+  final kind = PushKind.parse(data['kind']?.toString());
+  final channelId = int.tryParse('${data['channelId'] ?? ''}');
+  final messageId = int.tryParse('${data['messageId'] ?? ''}');
+  final channelLabel = data['channelName']?.toString().trim();
+  final lines = _inbox.add(
+    kind,
+    PushInboxLine(
+      author: title,
+      body: body,
+      channelId: channelId,
+      messageId: messageId,
+      channelLabel: (channelLabel != null && channelLabel.isNotEmpty)
+          ? channelLabel
+          : null,
+    ),
+  );
+  await _persistInbox();
+  await _postKind(
+    kind,
+    data: {
+      ...data,
+      'kind': kind.wire,
+      if (channelId != null) 'channelId': channelId,
+      if (messageId != null) 'messageId': messageId,
+    },
+    latest: lines.last,
+    plugin: plugin,
+    silent: silent,
+  );
+}
+
+Future<void> _postKind(
+  PushKind kind, {
+  required Map<String, dynamic> data,
+  PushInboxLine? latest,
+  FlutterLocalNotificationsPlugin? plugin,
+  bool silent = false,
+}) async {
+  final view = _inbox.presentation(kind);
+  if (view.lines.isEmpty) {
+    await _cancelKind(kind, plugin: plugin);
+    return;
+  }
+  final payload = jsonEncode({
+    ...data,
+    'kind': kind.wire,
+    if (latest?.channelId != null) 'channelId': latest!.channelId,
+    if (latest?.messageId != null) 'messageId': latest!.messageId,
+  });
+  var postedNative = false;
+  if (plugin == null) {
+    try {
+      await kurierNative.invokeMethod('notify', {
+        'title': view.title,
+        'body': view.body,
+        'kind': kind.wire,
+        'lines': view.lines,
+        'chatChannelId': latest?.channelId,
+        'messageId': latest?.messageId,
+        'silent': silent,
+      });
+      postedNative = true;
+    } catch (_) {}
+  }
+  if (postedNative) return;
   final p = plugin ?? _notifications;
-  final id = int.tryParse('${data['messageId'] ?? ''}') ??
-      DateTime.now().millisecondsSinceEpoch.remainder(1 << 31);
   await p.show(
-    id,
-    title,
-    body,
-    const NotificationDetails(
+    kind.androidNotificationId,
+    view.title,
+    view.body,
+    NotificationDetails(
       android: AndroidNotificationDetails(
-        'kurier_messages',
-        'Messages',
-        channelDescription: 'Chat messages',
-        importance: Importance.high,
+        kind.androidChannelId,
+        kind.androidChannelName,
+        channelDescription: kind.androidChannelName,
+        importance: Importance.max,
         priority: Priority.high,
         icon: '@drawable/ic_stat_kurier',
+        category: AndroidNotificationCategory.message,
+        visibility: NotificationVisibility.public,
+        playSound: !silent,
+        enableVibration: !silent,
+        silent: silent,
+        onlyAlertOnce: silent,
+        ticker: view.title,
+        autoCancel: true,
+        number: view.lines.length,
+        styleInformation: InboxStyleInformation(
+          view.lines,
+          contentTitle: view.title,
+          summaryText: kind.inboxTitle(view.lines.length),
+        ),
         actions: _messageActions,
       ),
     ),
-    payload: jsonEncode(data),
+    payload: payload,
   );
+}
+
+Future<void> _cancelKind(
+  PushKind kind, {
+  FlutterLocalNotificationsPlugin? plugin,
+}) async {
+  _inbox.clear(kind);
+  await _persistInbox();
+  try {
+    await kurierNative.invokeMethod('cancelNotify', {'kind': kind.wire});
+  } catch (_) {}
+  try {
+    await (plugin ?? _notifications).cancel(kind.androidNotificationId);
+  } catch (_) {}
+}
+
+void androidSetAppForeground(bool foreground) {
+  _appForeground = foreground;
+}
+
+bool get androidIsAppForeground => _appForeground;
+
+Future<void> androidShowIncomingNotification({
+  required String title,
+  required String body,
+  required String kind,
+  int? channelId,
+  int? messageId,
+  String? channelName,
+}) async {
+  if (!Platform.isAndroid) return;
+  await _showMessageNotification(
+    title: title,
+    body: body,
+    data: {
+      'kind': kind,
+      if (channelId != null) 'channelId': channelId,
+      if (messageId != null) 'messageId': messageId,
+      if (channelName != null && channelName.isNotEmpty)
+        'channelName': channelName,
+    },
+  );
+}
+
+Future<void> androidClearChannelNotifications(int channelId) async {
+  if (!Platform.isAndroid) return;
+  await _ensureInboxLoaded();
+  final changed = _inbox.removeChannel(channelId);
+  if (changed.isEmpty) return;
+  await _persistInbox();
+  for (final kind in changed) {
+    final remaining = _inbox.lines(kind);
+    if (remaining.isEmpty) {
+      await _cancelKind(kind);
+      continue;
+    }
+    await _postKind(
+      kind,
+      data: {
+        'kind': kind.wire,
+        'channelId': remaining.last.channelId,
+        'messageId': remaining.last.messageId,
+      },
+      latest: remaining.last,
+      silent: true,
+    );
+  }
 }
 
 Future<void> initAndroidRuntime() async {
@@ -152,15 +326,15 @@ Future<void> initAndroidRuntime() async {
     onDidReceiveNotificationResponse: _onNotificationResponse,
     onDidReceiveBackgroundNotificationResponse: notificationTapBackground,
   );
-  final androidPlugin = _notifications.resolvePlatformSpecificImplementation<
-      AndroidFlutterLocalNotificationsPlugin>();
-  await androidPlugin?.createNotificationChannel(
-    const AndroidNotificationChannel(
-      'kurier_messages',
-      'Messages',
-      importance: Importance.high,
-    ),
-  );
+  await _ensurePushChannels();
+  await _ensureInboxLoaded();
+  final androidPlugin = _notifications
+      .resolvePlatformSpecificImplementation<
+        AndroidFlutterLocalNotificationsPlugin
+      >();
+  try {
+    await androidPlugin?.requestNotificationsPermission();
+  } catch (_) {}
   await androidPlugin?.createNotificationChannel(
     const AndroidNotificationChannel(
       'kurier_voice',
@@ -168,8 +342,15 @@ Future<void> initAndroidRuntime() async {
       importance: Importance.low,
     ),
   );
-  FlutterForegroundTask.initCommunicationPort();
-  FlutterForegroundTask.addTaskDataCallback(_onFgData);
+  kurierNative.setMethodCallHandler((call) async {
+    if (call.method == 'voiceAction' && call.arguments is String) {
+      onVoiceNotificationAction?.call(call.arguments as String);
+      return;
+    }
+    if (call.method == 'notificationOpened') {
+      _onNativeNotificationOpened(call.arguments);
+    }
+  });
   _shareSub?.cancel();
   _shareSub = ReceiveSharingIntent.instance.getMediaStream().listen(_onShare);
   final initial = await ReceiveSharingIntent.instance.getInitialMedia();
@@ -200,6 +381,23 @@ void _onRemoteTap(RemoteMessage msg) {
   );
 }
 
+void _onNativeNotificationOpened(dynamic arguments) {
+  final data = arguments is Map
+      ? Map<String, dynamic>.from(arguments)
+      : <String, dynamic>{};
+  unawaited(_cancelKind(PushKind.parse(data['kind']?.toString())));
+  final channelId = int.tryParse(
+    '${data['channelId'] ?? data['chatChannelId'] ?? ''}',
+  );
+  final messageId = int.tryParse('${data['messageId'] ?? ''}');
+  _pendingDeepLink = PendingDeepLink(
+    channelId: (channelId != null && channelId != 0) ? channelId : null,
+    messageId: (messageId != null && messageId != 0) ? messageId : null,
+  );
+  final link = _pendingDeepLink;
+  if (link != null) onAndroidNotificationOpened?.call(link);
+}
+
 void _onNotificationResponse(NotificationResponse response) {
   final payload = response.payload;
   Map<String, dynamic> data = {};
@@ -207,6 +405,9 @@ void _onNotificationResponse(NotificationResponse response) {
     try {
       data = jsonDecode(payload) as Map<String, dynamic>;
     } catch (_) {}
+  }
+  if (data['kind'] != null) {
+    unawaited(_cancelKind(PushKind.parse(data['kind']?.toString())));
   }
   if (response.actionId == 'mark_read') {
     unawaited(_markRead(data));
@@ -220,12 +421,8 @@ void _onNotificationResponse(NotificationResponse response) {
     channelId: int.tryParse('${data['channelId'] ?? ''}'),
     messageId: int.tryParse('${data['messageId'] ?? ''}'),
   );
-}
-
-void _onFgData(Object data) {
-  if (data is Map && data['action'] is String) {
-    onVoiceNotificationAction?.call('${data['action']}');
-  }
+  final link = _pendingDeepLink;
+  if (link != null) onAndroidNotificationOpened?.call(link);
 }
 
 Future<void> androidConsumePendingShare(dynamic session) async {
@@ -289,30 +486,58 @@ Future<void> _quickReply(Map<String, dynamic> data, String? text) async {
   }
 }
 
-String _escape(String s) => s
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;');
+String _escape(String s) =>
+    s.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
+
+class AndroidNotifyPrefs {
+  const AndroidNotifyPrefs({
+    required this.notifyAll,
+    required this.mentions,
+    required this.dm,
+    required this.replies,
+  });
+  final bool notifyAll;
+  final bool mentions;
+  final bool dm;
+  final bool replies;
+}
+
+Future<AndroidNotifyPrefs?> androidLoadPrefs({required dynamic trpc}) async {
+  if (!Platform.isAndroid || trpc is! TrpcClient) return null;
+  try {
+    final raw = await trpc.query('push.getPreferences');
+    if (raw is! Map) return null;
+    return AndroidNotifyPrefs(
+      notifyAll: raw['notifyAll'] == true,
+      mentions: raw['mentions'] == true,
+      dm: raw['dm'] == true,
+      replies: raw['replies'] == true,
+    );
+  } catch (_) {
+    return null;
+  }
+}
+
+Future<void> androidOpenNotificationSettings() async {
+  if (!Platform.isAndroid) return;
+  try {
+    await kurierNative.invokeMethod('openNotificationSettings');
+  } catch (_) {}
+}
+
+bool get androidNotificationSettingsAvailable => Platform.isAndroid;
 
 Future<void> androidOnLogin({
   required dynamic trpc,
   required String origin,
   required String jwt,
-  required bool notifyAll,
-  required bool mentions,
-  required bool dm,
-  required bool replies,
 }) async {
   if (!Platform.isAndroid) return;
+  try {
+    await Permission.notification.request();
+  } catch (_) {}
   await androidStoreSession(origin: origin, jwt: jwt);
   if (trpc is TrpcClient) {
-    await androidSyncPrefs(
-      trpc: trpc,
-      notifyAll: notifyAll,
-      mentions: mentions,
-      dm: dm,
-      replies: replies,
-    );
     if (_firebaseReady) {
       try {
         final token = await FirebaseMessaging.instance.getToken();
@@ -379,41 +604,44 @@ Future<void> androidSyncPrefs({
   } catch (_) {}
 }
 
-Future<void> androidStartVoice({required String channelName}) async {
+Future<void> androidSyncKeepAlive({
+  required String serverName,
+  String? voiceChannelName,
+}) async {
   if (!Platform.isAndroid) return;
-  FlutterForegroundTask.init(
-    androidNotificationOptions: AndroidNotificationOptions(
-      channelId: 'kurier_voice',
-      channelName: 'Voice',
-      channelImportance: NotificationChannelImportance.LOW,
-      priority: NotificationPriority.LOW,
-    ),
-    iosNotificationOptions: const IOSNotificationOptions(),
-    foregroundTaskOptions: ForegroundTaskOptions(
-      eventAction: ForegroundTaskEventAction.repeat(15000),
-      autoRunOnBoot: false,
-      allowWakeLock: true,
-      allowWifiLock: true,
-    ),
-  );
-  await FlutterForegroundTask.startService(
-    notificationTitle: 'Kurier',
-    notificationText: 'Connected to #$channelName',
-    callback: startKurierVoiceTask,
-    notificationButtons: const [
-      NotificationButton(id: 'mute', text: 'Mute'),
-      NotificationButton(id: 'deafen', text: 'Deafen'),
-      NotificationButton(id: 'leave', text: 'Disconnect'),
-    ],
+  _keepAliveServer = serverName.isEmpty ? 'Kurier' : serverName;
+  _keepAlive = true;
+  try {
+    await Permission.notification.request();
+  } catch (_) {}
+  try {
+    await kurierNative.invokeMethod('startKeepAlive', {
+      'serverName': _keepAliveServer,
+      'voiceChannelName': voiceChannelName,
+    });
+  } catch (_) {}
+}
+
+Future<void> androidStopKeepAlive() async {
+  if (!Platform.isAndroid) return;
+  _keepAlive = false;
+  try {
+    await kurierNative.invokeMethod('stopKeepAlive');
+  } catch (_) {}
+}
+
+Future<void> androidStartVoice({required String channelName}) async {
+  await androidSyncKeepAlive(
+    serverName: _keepAliveServer,
+    voiceChannelName: channelName,
   );
 }
 
 Future<void> androidStopVoice() async {
-  if (!Platform.isAndroid) return;
-  try {
-    await FlutterForegroundTask.stopService();
-  } catch (_) {}
   await androidSyncPip(webcam: false, sharing: false);
+  if (_keepAlive) {
+    await androidSyncKeepAlive(serverName: _keepAliveServer);
+  }
 }
 
 Future<void> androidSyncPip({

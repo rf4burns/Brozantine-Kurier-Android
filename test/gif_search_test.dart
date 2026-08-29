@@ -1,10 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
 import 'package:kurier_web/app/l10n.dart';
 import 'package:kurier_web/app/theme.dart';
 import 'package:kurier_web/core/gif_search.dart';
+import 'package:kurier_web/core/klipy_discover.dart';
 import 'package:kurier_web/protocol/config.dart';
+import 'package:kurier_web/protocol/models.dart';
 import 'package:kurier_web/session/session_controller.dart';
 import 'package:kurier_web/ui/gif_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -103,6 +107,76 @@ void main() {
       AppConfig.klipyKeyFor(stored: ' user-key ', host: AppConfig.defaultHost),
       'user-key',
     );
+    expect(
+      AppConfig.klipyKeyFor(host: 'example.com', discovered: ' server-key '),
+      'server-key',
+    );
+    expect(
+      AppConfig.klipyKeyFor(
+        stored: 'user-key',
+        host: 'example.com',
+        discovered: 'server-key',
+      ),
+      'user-key',
+    );
+  });
+
+  test('extractKlipyKeyFromJs reads vanilla scrape URL and env keys', () {
+    expect(
+      extractKlipyKeyFromJs(
+        'https://api.klipy.com/api/v1/${AppConfig.brozantineKlipyKey}/gifs/trending',
+      ),
+      AppConfig.brozantineKlipyKey,
+    );
+    expect(
+      extractKlipyKeyFromJs(
+        'fetch("https://api.giphy.com/v1/gifs/search?api_key=giphyKeyValue1234")',
+      ),
+      'giphyKeyValue1234',
+    );
+    expect(extractKlipyKeyFromJs('no gif keys here'), isNull);
+  });
+
+  test('klipyKeyFromServerMap reads join and publicSettings hints', () {
+    expect(
+      klipyKeyFromServerMap({
+        'publicSettings': {'klipyApiKey': 'join-hint-key-1234'},
+      }),
+      'join-hint-key-1234',
+    );
+    expect(klipyKeyFromServerMap({'name': 'Kurier'}), isNull);
+  });
+
+  test('tryDiscoverKlipyKey scrapes vanilla index bundle', () async {
+    final client = MockClient((req) async {
+      if (req.url.path == '/vanilla/client') {
+        return http.Response(
+          '<html><script src="/assets/index-abc123.js"></script></html>',
+          200,
+        );
+      }
+      if (req.url.path == '/assets/index-abc123.js') {
+        return http.Response(
+          'https://api.klipy.com/api/v1/scrapedKlipyKey1234/gifs/trending',
+          200,
+        );
+      }
+      return http.Response('', 404);
+    });
+
+    expect(
+      await tryDiscoverKlipyKey(
+        origin: 'https://chat.example',
+        client: client,
+      ),
+      'scrapedKlipyKey1234',
+    );
+  });
+
+  test('SavedHost persists a baked KLIPY key', () {
+    final host = SavedHost(host: 'chat.example', klipy: 'baked-key-abcdef');
+    final roundTrip = SavedHost.fromJson(host.toJson());
+    expect(roundTrip.klipy, 'baked-key-abcdef');
   });
 
   test('gifApiKey follows host and stored settings', () async {
@@ -118,6 +192,15 @@ void main() {
 
     await s.store.setKlipy(' pasted-key ');
     expect(s.gifApiKey, 'pasted-key');
+  });
+
+  test('gifApiKey uses a key baked in from the joined server', () async {
+    SharedPreferences.setMockInitialValues({});
+    final s = SessionController();
+    await s.store.load();
+    s.activeHost = 'example.com';
+    s.serverKlipyKey = 'host-baked-key';
+    expect(s.gifApiKey, 'host-baked-key');
   });
 
   testWidgets('GifPicker asks for a KLIPY key off Brozantine hosts', (

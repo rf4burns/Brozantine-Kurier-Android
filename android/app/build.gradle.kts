@@ -7,7 +7,8 @@ plugins {
 
 android {
     namespace = "com.brozantine.kurier"
-    compileSdk = flutter.compileSdkVersion
+    // receive_sharing_intent 1.9+ requires API 37. Flutter 3.44 still defaults to 36.
+    compileSdk = 37
     ndkVersion = flutter.ndkVersion
 
     compileOptions {
@@ -18,7 +19,7 @@ android {
 
     defaultConfig {
         applicationId = "com.brozantine.kurier"
-        minSdk = 23
+        minSdk = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName

@@ -6,8 +6,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:kurier_web/app/l10n_tables.dart';
+import 'package:kurier_web/app/client_kind.dart';
 import 'package:kurier_web/core/custom_emoji.dart';
 import 'package:kurier_web/core/emoji_codec.dart';
+import 'package:kurier_web/native/push_inbox.dart';
+import 'package:kurier_web/native/push_kind.dart';
 import 'package:kurier_web/protocol/activity_log.dart';
 import 'package:kurier_web/protocol/audio_output.dart';
 import 'package:kurier_web/protocol/config.dart';
@@ -22,6 +25,8 @@ import 'package:kurier_web/protocol/sounds.dart';
 import 'package:kurier_web/protocol/trpc_client.dart';
 import 'package:kurier_web/protocol/voice_protocol.dart';
 import 'package:kurier_web/protocol/voice_stats.dart';
+import 'package:mediasfu_mediasoup_client/mediasfu_mediasoup_client.dart'
+    hide MediaDeviceInfo;
 import 'package:kurier_web/session/hosts_store.dart';
 import 'package:kurier_web/session/message_history.dart';
 import 'package:kurier_web/session/session_controller.dart';
@@ -202,6 +207,18 @@ void main() {
     });
   });
 
+  group('disconnect codes', () {
+    test('treats kick/ban/shutdown as fatal disconnects', () {
+      expect(isFatalDisconnectCode(40000), isTrue);
+      expect(isFatalDisconnectCode(40001), isTrue);
+      expect(isFatalDisconnectCode(40002), isTrue);
+      expect(isFatalDisconnectCode(40003), isTrue);
+      expect(isFatalDisconnectCode(1006), isFalse);
+      expect(isFatalDisconnectCode(1001), isFalse);
+      expect(isFatalDisconnectCode(1000), isFalse);
+    });
+  });
+
   group('i18n', () {
     test('every locale covers English keys', () {
       for (final entry in l10nTables.entries) {
@@ -211,6 +228,34 @@ void main() {
           reason: '${entry.key} is missing or has extra keys',
         );
       }
+    });
+  });
+
+  group('mobile presence', () {
+    test('kurierClientKind is desktop on VM and Windows native', () {
+      expect(kurierClientKind(), 'desktop');
+    });
+
+    test('fromJson reads mobile and keeps it when omitted', () {
+      final mobile = KurierUser.fromJson({
+        'id': 2,
+        'name': 'Ada',
+        'status': 'online',
+        'mobile': true,
+      });
+      expect(mobile.mobile, isTrue);
+      final kept = KurierUser.fromJson({
+        'id': 2,
+        'name': 'Ada',
+      }, existing: mobile);
+      expect(kept.mobile, isTrue);
+      expect(kept.status, 'online');
+      final cleared = KurierUser.fromJson({
+        'id': 2,
+        'name': 'Ada',
+        'mobile': false,
+      }, existing: mobile);
+      expect(cleared.mobile, isFalse);
     });
   });
 
@@ -599,6 +644,72 @@ void main() {
       expect(caps?['codecs'], isNotEmpty);
     });
 
+    test('coerces JSON fecMechanisms to List<String>', () {
+      final decoded =
+          jsonDecode(
+                jsonEncode({
+                  'codecs': [
+                    {
+                      'kind': 'audio',
+                      'mimeType': 'audio/opus',
+                      'clockRate': 48000,
+                      'rtcpFeedback': [
+                        {'type': 'nack'},
+                      ],
+                    },
+                  ],
+                  'headerExtensions': const [],
+                  'fecMechanisms': const <dynamic>[],
+                }),
+              )
+              as Map<String, dynamic>;
+      expect(decoded['fecMechanisms'] is List<String>, isFalse);
+      expect(
+        () => decoded['fecMechanisms'] as List<String>,
+        throwsA(isA<TypeError>()),
+      );
+      final prepared = nativeRtpCapabilitiesMap(decoded);
+      expect(prepared['fecMechanisms'], isA<List<String>>());
+      expect(prepared['fecMechanisms'] as List<String>, isEmpty);
+      expect(prepared['headerExtensions'], isA<List<dynamic>>());
+    });
+
+    test('mediasoup fromMap accepts sanitized JSON capabilities', () {
+      final decoded =
+          jsonDecode(
+                jsonEncode({
+                  'codecs': [
+                    {
+                      'kind': 'audio',
+                      'mimeType': 'audio/opus',
+                      'clockRate': 48000,
+                      'channels': 2,
+                      'preferredPayloadType': 111,
+                      'parameters': {'minptime': 10},
+                      'rtcpFeedback': [
+                        {'type': 'nack', 'parameter': ''},
+                      ],
+                    },
+                  ],
+                  'headerExtensions': [
+                    {
+                      'kind': 'audio',
+                      'uri': 'urn:ietf:params:rtp-hdrext:sdes:mid',
+                      'preferredId': 1,
+                      'preferredEncrypt': false,
+                      'direction': 'sendrecv',
+                    },
+                  ],
+                  'fecMechanisms': <dynamic>[],
+                }),
+              )
+              as Map<String, dynamic>;
+      expect(() => RtpCapabilities.fromMap(decoded), throwsA(isA<TypeError>()));
+      final caps = RtpCapabilities.fromMap(nativeRtpCapabilitiesMap(decoded));
+      expect(caps.codecs, isNotEmpty);
+      expect(caps.fecMechanisms, isEmpty);
+    });
+
     test('detects already-in-voice and rate-limit errors', () {
       expect(
         isAlreadyInVoiceError(Exception('User already in a voice channel')),
@@ -939,6 +1050,22 @@ void main() {
       expect(s.simulcastEnabled, isFalse);
       s.publicSettings['webRtcSimulcastEnabled'] = true;
       expect(s.simulcastEnabled, isTrue);
+    });
+
+    test('kick closes the session instead of silently reconnecting', () async {
+      final s = SessionController();
+      s.phase = SessionPhase.ready;
+      await s.handleGatewayClosed(40001, 'banned');
+      expect(s.phase, SessionPhase.disconnected);
+      expect(s.disconnectCode, 40001);
+    });
+
+    test('socket drop without credentials shows disconnected', () async {
+      final s = SessionController();
+      s.phase = SessionPhase.ready;
+      await s.handleGatewayClosed(1006, '');
+      expect(s.phase, SessionPhase.disconnected);
+      expect(s.disconnectCode, 1006);
     });
 
     test('maps speaking meter keys to user ids', () {
@@ -2441,5 +2568,195 @@ void main() {
         expect(migrated, isNot('abcdefghijklmnopqrstuvwxyz012345'));
       },
     );
+  });
+
+  group('push kind', () {
+    test('classifies with dm first', () {
+      expect(
+        PushKind.classify(isDm: true, mentioned: true, replyToMe: true),
+        PushKind.dm,
+      );
+      expect(
+        PushKind.classify(isDm: false, mentioned: true, replyToMe: true),
+        PushKind.mention,
+      );
+      expect(
+        PushKind.classify(isDm: false, mentioned: false, replyToMe: true),
+        PushKind.reply,
+      );
+      expect(
+        PushKind.classify(isDm: false, mentioned: false, replyToMe: false),
+        PushKind.message,
+      );
+    });
+
+    test('parses wire values and falls back to message', () {
+      expect(PushKind.parse('mention'), PushKind.mention);
+      expect(PushKind.parse('dm'), PushKind.dm);
+      expect(PushKind.parse('reply'), PushKind.reply);
+      expect(PushKind.parse('message'), PushKind.message);
+      expect(PushKind.parse(null), PushKind.message);
+      expect(PushKind.parse('nope'), PushKind.message);
+    });
+
+    test('maps to android channel ids', () {
+      expect(PushKind.message.androidChannelId, 'kurier_messages');
+      expect(PushKind.mention.androidChannelId, 'kurier_mentions');
+      expect(PushKind.dm.androidChannelId, 'kurier_dms');
+      expect(PushKind.reply.androidChannelId, 'kurier_replies');
+      expect(PushKind.message.androidNotificationId, 1001);
+      expect(PushKind.mention.androidNotificationId, 1002);
+      expect(PushKind.dm.androidNotificationId, 1003);
+      expect(PushKind.reply.androidNotificationId, 1004);
+    });
+
+    test('inbox titles count by kind', () {
+      expect(PushKind.mention.inboxTitle(1), 'Mention');
+      expect(PushKind.mention.inboxTitle(3), '3 mentions');
+      expect(PushKind.reply.inboxTitle(1), 'Reply');
+      expect(PushKind.reply.inboxTitle(2), '2 replies');
+      expect(PushKind.dm.inboxTitle(1), 'Direct message');
+      expect(PushKind.dm.inboxTitle(4), '4 direct messages');
+      expect(PushKind.message.inboxTitle(1), 'Message');
+      expect(PushKind.message.inboxTitle(5), '5 messages');
+    });
+  });
+
+  group('push inbox', () {
+    test('stacks one slot per kind and does not mix types', () {
+      final inbox = PushInbox();
+      inbox.add(
+        PushKind.mention,
+        const PushInboxLine(
+          author: 'Ada',
+          body: 'hi',
+          messageId: 1,
+          channelLabel: '#lounge',
+        ),
+      );
+      inbox.add(
+        PushKind.mention,
+        const PushInboxLine(
+          author: 'Bob',
+          body: 'hey',
+          messageId: 2,
+          channelLabel: '#lounge',
+        ),
+      );
+      inbox.add(
+        PushKind.reply,
+        const PushInboxLine(
+          author: 'Cy',
+          body: 're',
+          messageId: 3,
+          channelLabel: '#dev',
+        ),
+      );
+      expect(inbox.lines(PushKind.mention).length, 2);
+      expect(inbox.lines(PushKind.reply).length, 1);
+      expect(inbox.lines(PushKind.dm), isEmpty);
+      expect(inbox.presentation(PushKind.mention).title, '#lounge');
+      expect(inbox.presentation(PushKind.mention).lines, [
+        'Ada: hi',
+        'Bob: hey',
+      ]);
+      expect(inbox.presentation(PushKind.reply).title, '#dev');
+      expect(inbox.presentation(PushKind.reply).body, 're');
+    });
+
+    test('single mention titles the channel, mixed channels count instead', () {
+      final inbox = PushInbox();
+      inbox.add(
+        PushKind.mention,
+        const PushInboxLine(
+          author: 'Ada',
+          body: '@tester',
+          messageId: 1,
+          channelLabel: '#general',
+        ),
+      );
+      expect(inbox.presentation(PushKind.mention).title, '#general');
+      expect(inbox.presentation(PushKind.mention).body, '@tester');
+      inbox.add(
+        PushKind.mention,
+        const PushInboxLine(
+          author: 'Bob',
+          body: 'hey',
+          messageId: 2,
+          channelLabel: '#random',
+        ),
+      );
+      expect(inbox.presentation(PushKind.mention).title, '2 mentions');
+    });
+
+    test('dedupes by message id and drops a channel from every kind', () {
+      final inbox = PushInbox();
+      inbox.add(
+        PushKind.mention,
+        const PushInboxLine(
+          author: 'Ada',
+          body: 'one',
+          channelId: 10,
+          messageId: 1,
+        ),
+      );
+      inbox.add(
+        PushKind.mention,
+        const PushInboxLine(
+          author: 'Ada',
+          body: 'one edited',
+          channelId: 10,
+          messageId: 1,
+        ),
+      );
+      inbox.add(
+        PushKind.mention,
+        const PushInboxLine(
+          author: 'Bob',
+          body: 'two',
+          channelId: 11,
+          messageId: 2,
+        ),
+      );
+      expect(inbox.lines(PushKind.mention).length, 2);
+      expect(inbox.lines(PushKind.mention).first.body, 'one edited');
+      final changed = inbox.removeChannel(10);
+      expect(changed, {PushKind.mention});
+      expect(inbox.lines(PushKind.mention).single.body, 'two');
+    });
+
+    test('round-trips encoded lines', () {
+      final inbox = PushInbox();
+      inbox.add(
+        PushKind.dm,
+        const PushInboxLine(
+          author: 'Ada',
+          body: 'secret',
+          channelId: 8,
+          messageId: 9,
+        ),
+      );
+      final copy = PushInbox()..loadEncoded(inbox.encode());
+      expect(copy.presentation(PushKind.dm).title, 'Ada');
+      expect(copy.lines(PushKind.dm).single.messageId, 9);
+    });
+  });
+
+  group('notify prefs store', () {
+    test('applyNotifyPrefs writes all four flags', () async {
+      SharedPreferences.setMockInitialValues({});
+      final store = HostsStore();
+      await store.load();
+      await store.applyNotifyPrefs(
+        notifyAll: true,
+        mentions: false,
+        dm: false,
+        replies: true,
+      );
+      expect(store.notifyAll, isTrue);
+      expect(store.notifyMentions, isFalse);
+      expect(store.notifyDm, isFalse);
+      expect(store.notifyReplies, isTrue);
+    });
   });
 }

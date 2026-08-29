@@ -866,100 +866,138 @@ class NotificationsSettingsTab extends StatelessWidget {
   Widget build(BuildContext context) {
     final l = L10n.of(context);
     final perm = PlatformBridge.notificationPermission();
-    return SettingsCard(
-      title: l('notificationsTitle'),
-      description: l('notificationsDesc'),
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        if (perm != 'granted') ...[
-          Text(perm, style: TextStyle(color: context.p.muted, fontSize: 13)),
-          Align(
-            alignment: Alignment.centerLeft,
-            child: KurierButton(
-              label: l('enableNotifications'),
-              outline: true,
-              onPressed: () => PlatformBridge.requestNotifications(),
+        SettingsCard(
+          title: l('notificationsTitle'),
+          description: isNativeMobile
+              ? l('notificationsPushDesc')
+              : l('notificationsDesc'),
+          children: [
+            if (perm != 'granted') ...[
+              Text(
+                perm,
+                style: TextStyle(color: context.p.muted, fontSize: 13),
+              ),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: KurierButton(
+                  label: l('enableNotifications'),
+                  outline: true,
+                  onPressed: () async {
+                    await PlatformBridge.requestNotifications();
+                    s.refresh();
+                  },
+                ),
+              ),
+            ],
+            SettingsToggleRow(
+              leadingSwitch: true,
+              label: l('allMessages'),
+              description: l('allMessagesDesc'),
+              value: s.store.notifyAll,
+              onChanged: (v) async {
+                await s.store.setNotifyAll(v);
+                await androidSyncPrefs(
+                  trpc: s.trpc,
+                  notifyAll: v,
+                  mentions: s.store.notifyMentions,
+                  dm: s.store.notifyDm,
+                  replies: s.store.notifyReplies,
+                );
+                s.refresh();
+              },
             ),
+            SettingsToggleRow(
+              leadingSwitch: true,
+              label: l('mentionsOnly'),
+              description: l('mentionsOnlyDesc'),
+              value: s.store.notifyMentions,
+              onChanged: (v) async {
+                await s.store.setNotifyMentions(v);
+                await androidSyncPrefs(
+                  trpc: s.trpc,
+                  notifyAll: s.store.notifyAll,
+                  mentions: v,
+                  dm: s.store.notifyDm,
+                  replies: s.store.notifyReplies,
+                );
+                s.refresh();
+              },
+            ),
+            SettingsToggleRow(
+              leadingSwitch: true,
+              label: l('dmNotifications'),
+              description: l('dmNotificationsDesc'),
+              value: s.store.notifyDm,
+              onChanged: (v) async {
+                await s.store.setNotifyDm(v);
+                await androidSyncPrefs(
+                  trpc: s.trpc,
+                  notifyAll: s.store.notifyAll,
+                  mentions: s.store.notifyMentions,
+                  dm: v,
+                  replies: s.store.notifyReplies,
+                );
+                s.refresh();
+              },
+            ),
+            SettingsToggleRow(
+              leadingSwitch: true,
+              label: l('repliesToMe'),
+              description: l('repliesToMeDesc'),
+              value: s.store.notifyReplies,
+              onChanged: (v) async {
+                await s.store.setNotifyReplies(v);
+                await androidSyncPrefs(
+                  trpc: s.trpc,
+                  notifyAll: s.store.notifyAll,
+                  mentions: s.store.notifyMentions,
+                  dm: s.store.notifyDm,
+                  replies: v,
+                );
+                s.refresh();
+              },
+            ),
+            if (androidNotificationSettingsAvailable) ...[
+              Text(
+                l('systemNotificationSettingsDesc'),
+                style: TextStyle(
+                  color: context.p.muted,
+                  fontSize: 13,
+                  height: 1.35,
+                ),
+              ),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: KurierButton(
+                  label: l('systemNotificationSettings'),
+                  outline: true,
+                  onPressed: androidOpenNotificationSettings,
+                ),
+              ),
+            ],
+          ],
+        ),
+        if (isNativeMobile) ...[
+          const SizedBox(height: 16),
+          SettingsCard(
+            title: l('appLock'),
+            description: l('appLockDesc'),
+            children: [
+              SettingsToggleRow(
+                leadingSwitch: true,
+                label: l('appLock'),
+                value: androidAppLockEnabled,
+                onChanged: (v) async {
+                  await setAndroidAppLockEnabled(v);
+                  s.refresh();
+                },
+              ),
+            ],
           ),
         ],
-        SettingsToggleRow(
-          leadingSwitch: true,
-          label: l('allMessages'),
-          description: l('allMessagesDesc'),
-          value: s.store.notifyAll,
-          onChanged: (v) async {
-            await s.store.setNotifyAll(v);
-            await androidSyncPrefs(
-              trpc: s.trpc,
-              notifyAll: v,
-              mentions: s.store.notifyMentions,
-              dm: s.store.notifyDm,
-              replies: s.store.notifyReplies,
-            );
-            s.refresh();
-          },
-        ),
-        SettingsToggleRow(
-          leadingSwitch: true,
-          label: l('mentionsOnly'),
-          description: l('mentionsOnlyDesc'),
-          value: s.store.notifyMentions,
-          onChanged: (v) async {
-            await s.store.setNotifyMentions(v);
-            await androidSyncPrefs(
-              trpc: s.trpc,
-              notifyAll: s.store.notifyAll,
-              mentions: v,
-              dm: s.store.notifyDm,
-              replies: s.store.notifyReplies,
-            );
-            s.refresh();
-          },
-        ),
-        SettingsToggleRow(
-          leadingSwitch: true,
-          label: l('dmNotifications'),
-          description: l('dmNotificationsDesc'),
-          value: s.store.notifyDm,
-          onChanged: (v) async {
-            await s.store.setNotifyDm(v);
-            await androidSyncPrefs(
-              trpc: s.trpc,
-              notifyAll: s.store.notifyAll,
-              mentions: s.store.notifyMentions,
-              dm: v,
-              replies: s.store.notifyReplies,
-            );
-            s.refresh();
-          },
-        ),
-        SettingsToggleRow(
-          leadingSwitch: true,
-          label: l('repliesToMe'),
-          description: l('repliesToMeDesc'),
-          value: s.store.notifyReplies,
-          onChanged: (v) async {
-            await s.store.setNotifyReplies(v);
-            await androidSyncPrefs(
-              trpc: s.trpc,
-              notifyAll: s.store.notifyAll,
-              mentions: s.store.notifyMentions,
-              dm: s.store.notifyDm,
-              replies: v,
-            );
-            s.refresh();
-          },
-        ),
-        if (isNativeMobile)
-          SettingsToggleRow(
-            leadingSwitch: true,
-            label: l('appLock'),
-            description: l('appLockDesc'),
-            value: androidAppLockEnabled,
-            onChanged: (v) async {
-              await setAndroidAppLockEnabled(v);
-              s.refresh();
-            },
-          ),
       ],
     );
   }

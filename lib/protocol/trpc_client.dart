@@ -60,32 +60,49 @@ class TrpcClient {
   final _subs = <int, StreamController<dynamic>>{};
   int _nextId = 1;
   bool _opened = false;
+  bool _silentClose = false;
   Completer<void>? _ready;
   Timer? _ping;
   void Function(int code, String reason)? onClose;
+
+  bool get isOpen => _opened;
 
   Future<void> connect() async {
     await close(silent: true);
     _ready = Completer<void>();
     _channel = WebSocketChannel.connect(url);
-    _channel!.stream.listen(
+    final channel = _channel!;
+    channel.stream.listen(
       _onMessage,
       onDone: () {
-        final closeCode = _channel?.closeCode ?? 1006;
-        final reason = _channel?.closeReason ?? '';
+        if (!identical(_channel, channel)) return;
+        _opened = false;
+        _ping?.cancel();
+        final closeCode = channel.closeCode ?? 1006;
+        final reason = channel.closeReason ?? '';
+        final silent = _silentClose;
+        _silentClose = false;
         _failAll('Disconnected');
-        onClose?.call(closeCode, reason);
+        if (!silent) onClose?.call(closeCode, reason);
       },
       onError: (Object e) {
+        if (!identical(_channel, channel)) return;
+        _opened = false;
+        _ping?.cancel();
+        if (_silentClose) {
+          _silentClose = false;
+          return;
+        }
         _failAll('$e');
         onClose?.call(1006, '$e');
       },
     );
-    await _channel!.ready;
+    await channel.ready;
     _opened = true;
+    _silentClose = false;
     _send({'method': 'connectionParams', 'data': connectionParams()});
     _ping?.cancel();
-    _ping = Timer.periodic(const Duration(seconds: 30), (_) {
+    _ping = Timer.periodic(const Duration(seconds: 15), (_) {
       _channel?.sink.add('PING');
     });
     _ready?.complete();
@@ -215,6 +232,7 @@ class TrpcClient {
     _opened = false;
     _ping?.cancel();
     _ping = null;
+    _silentClose = silent;
     if (!silent) _failAll('Closed');
     try {
       await _channel?.sink.close();

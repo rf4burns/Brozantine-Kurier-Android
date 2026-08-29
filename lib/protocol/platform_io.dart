@@ -16,6 +16,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
+import '../native/android_runtime.dart';
 import 'native_channels.dart';
 import 'voice_protocol.dart';
 import 'voice_stats.dart';
@@ -120,24 +121,20 @@ class PlatformBridge {
 
   static Future<Map<String, dynamic>> loadDevice(dynamic caps) async {
     if (!available) return {};
-    final map = caps is Map
+    final raw = caps is Map
         ? Map<String, dynamic>.from(caps)
         : jsonDecode(caps is String ? caps : jsonEncode(caps))
-            as Map<String, dynamic>;
-    map['headerExtensions'] ??= <dynamic>[];
-    map['fecMechanisms'] ??= <dynamic>[];
+              as Map<String, dynamic>;
+    final map = nativeRtpCapabilitiesMap(raw);
     _device = Device();
-    await _device!.load(
-      routerRtpCapabilities: RtpCapabilities.fromMap(map),
-    );
+    await _device!.load(routerRtpCapabilities: RtpCapabilities.fromMap(map));
     final rtp = _device!.rtpCapabilities;
     return {
       'codecs': rtp.codecs.map((c) => c.toMap()).toList(),
       'headerExtensions': [
         for (final e in rtp.headerExtensions)
           {
-            if (e.kind != null)
-              'kind': RTCRtpMediaTypeExtension.value(e.kind!),
+            if (e.kind != null) 'kind': RTCRtpMediaTypeExtension.value(e.kind!),
             'uri': e.uri,
             'preferredId': e.preferredId,
             'preferredEncrypt': e.preferredEncrypt ?? false,
@@ -468,12 +465,9 @@ class PlatformBridge {
       peerId: '${info['remoteId'] ?? ''}',
       kind: rtpKind,
       rtpParameters: RtpParameters.fromMap(
-        Map<String, dynamic>.from(rtp as Map),
+        nativeRtpParametersMap(Map<String, dynamic>.from(rtp as Map)),
       ),
-      appData: {
-        'kind': info['consumerKind'],
-        'remoteId': info['remoteId'],
-      },
+      appData: {'kind': info['consumerKind'], 'remoteId': info['remoteId']},
     );
     final consumer = await _consumerReady!.future.timeout(
       const Duration(seconds: 20),
@@ -640,7 +634,9 @@ class PlatformBridge {
       }
     } catch (_) {}
     try {
-      final native = await kurierAudio.invokeMethod<List<dynamic>>('listOutputs');
+      final native = await kurierAudio.invokeMethod<List<dynamic>>(
+        'listOutputs',
+      );
       for (final raw in native ?? const []) {
         if (raw is! Map) continue;
         final id = '${raw['id']}';
@@ -714,30 +710,40 @@ class PlatformBridge {
 
   static List<int> _le16(int v) => [v & 0xff, (v >> 8) & 0xff];
   static List<int> _le32(int v) => [
-        v & 0xff,
-        (v >> 8) & 0xff,
-        (v >> 16) & 0xff,
-        (v >> 24) & 0xff,
-      ];
+    v & 0xff,
+    (v >> 8) & 0xff,
+    (v >> 16) & 0xff,
+    (v >> 24) & 0xff,
+  ];
 
-  static void notify(String title, String body) {
+  static PermissionStatus? _notificationStatus;
+
+  static void notify(String title, String body, {String? kind}) {
     if (!available) return;
     unawaited(
-      kurierNative.invokeMethod('notify', {'title': title, 'body': body}),
+      androidShowIncomingNotification(
+        title: title,
+        body: body,
+        kind: kind ?? 'message',
+      ),
     );
+  }
+
+  static Future<void> refreshNotificationPermission() async {
+    if (!available) return;
+    _notificationStatus = await Permission.notification.status;
   }
 
   static Future<String> requestNotifications() async {
     if (!available) return 'unsupported';
     final status = await Permission.notification.request();
+    _notificationStatus = status;
     return status.isGranted ? 'granted' : 'denied';
   }
 
   static String notificationPermission() {
     if (!available) return 'unsupported';
-    return Permission.notification.status.toString().contains('granted')
-        ? 'granted'
-        : 'denied';
+    return _notificationStatus?.isGranted == true ? 'granted' : 'denied';
   }
 
   static Future<void> copyText(String text) async {
@@ -755,7 +761,8 @@ class PlatformBridge {
 
   static Future<void> _saveFile(List<int> bytes, String filename) async {
     try {
-      final dir = await getDownloadsDirectory() ?? await getTemporaryDirectory();
+      final dir =
+          await getDownloadsDirectory() ?? await getTemporaryDirectory();
       final file = File('${dir.path}/$filename');
       await file.writeAsBytes(bytes);
     } catch (_) {}
@@ -769,10 +776,7 @@ class PlatformBridge {
     _handler?.call(name, payload);
   }
 
-  static void applyBrowserBranding({
-    required String title,
-    String? iconUrl,
-  }) {}
+  static void applyBrowserBranding({required String title, String? iconUrl}) {}
 
   static String? randomUuid() {
     final r = Random.secure();

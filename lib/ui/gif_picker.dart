@@ -108,6 +108,9 @@ class _GifPickerState extends State<GifPicker> {
       _noProvider = false;
     });
     try {
+      if (widget.session.gifApiKey.isEmpty) {
+        await widget.session.ensureServerKlipyKey();
+      }
       final urls = await widget.session.searchGifs(query);
       if (!mounted) return;
       setState(() {

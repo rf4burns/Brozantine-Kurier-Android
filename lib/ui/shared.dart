@@ -122,18 +122,25 @@ class UserAvatar extends StatelessWidget {
             Positioned(
               right: -1,
               bottom: -1,
-              child: Container(
-                width: size * 0.32,
-                height: size * 0.32,
-                decoration: BoxDecoration(
-                  color: status,
-                  shape: BoxShape.circle,
-                  border: Border.all(
-                    color: statusBorderColor ?? p.sidebar,
-                    width: 2,
-                  ),
-                ),
-              ),
+              child: user != null && user!.mobile && user!.isOnline
+                  ? MobileStatusPip(
+                      key: const ValueKey('mobile-status'),
+                      size: size * 0.42,
+                      fill: status,
+                      border: statusBorderColor ?? p.sidebar,
+                    )
+                  : Container(
+                      width: size * 0.32,
+                      height: size * 0.32,
+                      decoration: BoxDecoration(
+                        color: status,
+                        shape: BoxShape.circle,
+                        border: Border.all(
+                          color: statusBorderColor ?? p.sidebar,
+                          width: 2,
+                        ),
+                      ),
+                    ),
             ),
         ],
       ),
@@ -165,6 +172,83 @@ class UserAvatar extends StatelessWidget {
       ),
     );
   }
+}
+
+class MobileStatusPip extends StatelessWidget {
+  const MobileStatusPip({
+    super.key,
+    required this.size,
+    required this.fill,
+    required this.border,
+  });
+
+  final double size;
+  final Color fill;
+  final Color border;
+
+  @override
+  Widget build(BuildContext context) {
+    final w = size * 0.72;
+    final h = size;
+    return SizedBox(
+      width: w,
+      height: h,
+      child: CustomPaint(
+        painter: _PhonePipPainter(fill: fill, border: border),
+      ),
+    );
+  }
+}
+
+class _PhonePipPainter extends CustomPainter {
+  _PhonePipPainter({required this.fill, required this.border});
+
+  final Color fill;
+  final Color border;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final stroke = (size.shortestSide * 0.18).clamp(1.4, 2.2);
+    final bezel = RRect.fromRectAndRadius(
+      Offset.zero & size,
+      Radius.circular(size.width * 0.28),
+    );
+    canvas.drawRRect(bezel, Paint()..color = border);
+
+    final inset = stroke;
+    final screen = RRect.fromRectAndRadius(
+      Rect.fromLTWH(
+        inset,
+        inset * 1.15,
+        size.width - inset * 2,
+        size.height - inset * 2.3,
+      ),
+      Radius.circular(size.width * 0.16),
+    );
+    canvas.drawRRect(screen, Paint()..color = fill);
+
+    final slit = Paint()..color = border.withValues(alpha: 0.85);
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+        Rect.fromCenter(
+          center: Offset(size.width / 2, inset * 1.35),
+          width: size.width * 0.28,
+          height: stroke * 0.45,
+        ),
+        const Radius.circular(1),
+      ),
+      slit,
+    );
+    canvas.drawCircle(
+      Offset(size.width / 2, size.height - inset * 0.85),
+      stroke * 0.35,
+      slit,
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant _PhonePipPainter old) =>
+      old.fill != fill || old.border != border;
 }
 
 const kVoiceLive = Color(0xFF23A55A);

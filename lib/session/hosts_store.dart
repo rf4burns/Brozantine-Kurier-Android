@@ -144,6 +144,19 @@ class HostsStore {
   Future<void> setNotifyMentions(bool v) => setBool(_notifyMentionsKey, v);
   Future<void> setNotifyDm(bool v) => setBool(_notifyDmKey, v);
   Future<void> setNotifyReplies(bool v) => setBool(_notifyRepliesKey, v);
+
+  Future<void> applyNotifyPrefs({
+    required bool notifyAll,
+    required bool mentions,
+    required bool dm,
+    required bool replies,
+  }) async {
+    await setNotifyAll(notifyAll);
+    await setNotifyMentions(mentions);
+    await setNotifyDm(dm);
+    await setNotifyReplies(replies);
+  }
+
   Future<void> setSoundMention(bool v) => setBool(_soundMentionKey, v);
   Future<void> setSoundMessage(bool v) => setBool(_soundMessageKey, v);
   Future<void> setAutoJoin(bool v) => setBool(_autoJoinKey, v);

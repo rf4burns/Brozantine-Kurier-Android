@@ -419,9 +419,11 @@ class PlatformBridge {
     if (_sounds != null) _stopSoundKeepAlive();
   }
 
-  static void notify(String title, String body) {
+  static void notify(String title, String body, {String? kind}) {
     if (available) _notify(title.toJS, body.toJS);
   }
+
+  static Future<void> refreshNotificationPermission() async {}
 
   static Future<String> requestNotifications() async {
     if (!available) return 'unsupported';

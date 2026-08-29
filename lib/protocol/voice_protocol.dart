@@ -36,6 +36,66 @@ Map<String, dynamic>? routerRtpCapabilitiesOf(dynamic raw) {
   return null;
 }
 
+List<String> jsonStringList(dynamic raw) {
+  if (raw is! List) return <String>[];
+  return [for (final e in raw) '$e'];
+}
+
+Map<String, dynamic> jsonObject(dynamic raw) {
+  if (raw is Map<String, dynamic>) return Map<String, dynamic>.from(raw);
+  if (raw is Map) return Map<String, dynamic>.from(raw);
+  return <String, dynamic>{};
+}
+
+List<Map<String, dynamic>> jsonObjectList(dynamic raw) {
+  if (raw is! List) return <Map<String, dynamic>>[];
+  return [for (final e in raw) jsonObject(e)];
+}
+
+/// mediasoup's `RtpCapabilities.fromMap` types `fecMechanisms` as
+/// `List<String>`. JSON (and `List.from` / `?? <dynamic>[]`) is `List<dynamic>`.
+Map<String, dynamic> nativeRtpCapabilitiesMap(Map<String, dynamic> caps) {
+  final out = Map<String, dynamic>.from(caps);
+  // `fromMap` casts headerExtensions to List<dynamic>; List is invariant.
+  out['headerExtensions'] = <dynamic>[
+    for (final ext in jsonObjectList(out['headerExtensions'])) ext,
+  ];
+  out['fecMechanisms'] = jsonStringList(out['fecMechanisms']);
+  out['codecs'] = <dynamic>[
+    for (final codec in jsonObjectList(out['codecs'])) nativeRtpCodecMap(codec),
+  ];
+  return out;
+}
+
+Map<String, dynamic> nativeRtpParametersMap(Map<String, dynamic> rtp) {
+  final out = Map<String, dynamic>.from(rtp);
+  out['codecs'] = [
+    for (final codec in jsonObjectList(out['codecs'])) nativeRtpCodecMap(codec),
+  ];
+  out['headerExtensions'] = [
+    for (final ext in jsonObjectList(out['headerExtensions']))
+      nativeRtpHeaderExtensionParametersMap(ext),
+  ];
+  out['encodings'] = jsonObjectList(out['encodings']);
+  if (out['rtcp'] != null) out['rtcp'] = jsonObject(out['rtcp']);
+  return out;
+}
+
+Map<String, dynamic> nativeRtpCodecMap(Map<String, dynamic> codec) {
+  final out = Map<String, dynamic>.from(codec);
+  out['parameters'] = jsonObject(out['parameters']);
+  out['rtcpFeedback'] = jsonObjectList(out['rtcpFeedback']);
+  return out;
+}
+
+Map<String, dynamic> nativeRtpHeaderExtensionParametersMap(
+  Map<String, dynamic> ext,
+) {
+  final out = Map<String, dynamic>.from(ext);
+  out['parameters'] = jsonObject(out['parameters']);
+  return out;
+}
+
 bool isAlreadyInVoiceError(Object error) {
   final text = '$error'.toLowerCase();
   return text.contains('already in a voice channel') ||

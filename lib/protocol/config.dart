@@ -28,13 +28,20 @@ class AppConfig {
         h.endsWith('.brozantine.com');
   }
 
-  /// Settings and `--dart-define=KURIER_KLIPY_KEY` win. Brozantine hosts
-  /// fall back to the baked vanilla-client key.
-  static String klipyKeyFor({String? stored, String? host}) {
+  /// Settings and `--dart-define=KURIER_KLIPY_KEY` win. A key discovered
+  /// from the joined server is next. Brozantine hosts fall back to the
+  /// baked vanilla-client key.
+  static String klipyKeyFor({
+    String? stored,
+    String? host,
+    String? discovered,
+  }) {
     final local = (stored ?? '').trim();
     if (local.isNotEmpty) return local;
     if (klipyKey.isNotEmpty) return klipyKey;
-    if (!isNativeMobile && isBrozantineHost(host)) return brozantineKlipyKey;
+    final fromServer = (discovered ?? '').trim();
+    if (fromServer.isNotEmpty) return fromServer;
+    if (isBrozantineHost(host)) return brozantineKlipyKey;
     return '';
   }
 

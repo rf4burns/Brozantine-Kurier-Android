@@ -3948,4 +3948,43 @@ void main() {
     expect(HostsStore().echoCancellation, isTrue);
     expect(HostsStore().keepScreenOnVoice, isFalse);
   });
+
+  testWidgets('UserAvatar shows a phone pip only when mobile-online', (
+    tester,
+  ) async {
+    final session = SessionController();
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildTheme(ThemePreset.dark, overlayAccent),
+        home: Column(
+          children: [
+            UserAvatar(
+              user: KurierUser(
+                id: 1,
+                name: 'Ada',
+                status: 'online',
+                mobile: true,
+              ),
+              session: session,
+            ),
+            UserAvatar(
+              user: KurierUser(id: 2, name: 'Gordon', status: 'online'),
+              session: session,
+            ),
+            UserAvatar(
+              user: KurierUser(
+                id: 3,
+                name: 'Offline',
+                status: 'offline',
+                mobile: true,
+              ),
+              session: session,
+            ),
+          ],
+        ),
+      ),
+    );
+
+    expect(find.byKey(const ValueKey('mobile-status')), findsOneWidget);
+  });
 }

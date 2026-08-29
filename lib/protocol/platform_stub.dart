@@ -87,7 +87,8 @@ class PlatformBridge {
   static void playSound(String type) {}
   static void playPing() {}
   static void stopSoundKeepAlive() {}
-  static void notify(String title, String body) {}
+  static void notify(String title, String body, {String? kind}) {}
+  static Future<void> refreshNotificationPermission() async {}
   static Future<String> requestNotifications() async => 'unsupported';
   static String notificationPermission() => 'unsupported';
   static Future<void> copyText(String text) async {}

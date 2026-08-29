@@ -7,10 +7,12 @@ import 'package:http/http.dart' as http;
 
 import '../app/breakpoints.dart';
 import '../app/app_platform.dart';
+import '../app/client_kind.dart';
 import '../core/custom_emoji.dart';
 import '../core/emoji_codec.dart';
 import '../core/emoji_recent.dart';
 import '../core/gif_search.dart';
+import '../core/klipy_discover.dart';
 import '../core/quick_reactions.dart';
 import '../protocol/activity_log.dart';
 import '../protocol/audio_output.dart';
@@ -26,10 +28,14 @@ import '../protocol/trpc_client.dart';
 import '../protocol/voice_protocol.dart';
 import '../protocol/voice_stats.dart';
 import '../native/android_runtime.dart';
+import '../native/push_kind.dart';
 import 'hosts_store.dart';
 import 'message_history.dart';
 
 enum SessionPhase { boot, login, connecting, ready, disconnected }
+
+bool isFatalDisconnectCode(int code) =>
+    code == 40000 || code == 40001 || code == 40002 || code == 40003;
 
 class TypingUser {
   TypingUser(this.userId, this.until);
@@ -59,6 +65,10 @@ class SessionController extends ChangeNotifier {
 
   HttpApi? httpApi;
   TrpcClient? trpc;
+
+  /// KLIPY key from this host's join payload or vanilla web client.
+  String? serverKlipyKey;
+  Future<void>? _klipyDiscover;
 
   JoinPayload? join;
   final users = <int, KurierUser>{};
@@ -139,6 +149,9 @@ class SessionController extends ChangeNotifier {
   bool _checkingPlayback = false;
   bool voiceAudioLocked = false;
   bool _closingByUser = false;
+  bool _recovering = false;
+  int _recoverAttempts = 0;
+  Timer? _recoverTimer;
   DateTime? _ignoreOwnVoiceLeaveUntil;
   final _autoRejoinAt = <DateTime>[];
 
@@ -193,15 +206,27 @@ class SessionController extends ChangeNotifier {
         leaveVoice();
       }
     };
+    onAndroidNotificationOpened = (link) {
+      if (phase != SessionPhase.ready || link.channelId == null) return;
+      takePendingDeepLink();
+      unawaited(jumpToMessage(link.channelId!, link.messageId ?? 0));
+    };
     await _ensureDefaultHost();
+    if (isNativeMobile && activeHost == null) {
+      phase = SessionPhase.login;
+      notifyListeners();
+      return;
+    }
+    final saved = hosts.where((h) => h.host == activeHost).firstOrNull;
+    final savedToken = saved?.token;
+    if (savedToken != null && savedToken.isNotEmpty) {
+      await probeActive();
+      await connect(host: saved!.host, existingToken: savedToken);
+      return;
+    }
     phase = SessionPhase.login;
     notifyListeners();
-    if (isNativeMobile && activeHost == null) return;
     await probeActive();
-    final host = hosts.where((h) => h.host == activeHost).firstOrNull;
-    if (host?.token != null && host!.autoLogin) {
-      await connect(host: host.host, existingToken: host.token!);
-    }
   }
 
   bool _isLoopback(String host) {
@@ -324,13 +349,15 @@ class SessionController extends ChangeNotifier {
     await disconnect(forgetToken: false);
     activeHost = host;
     await store.setActiveHost(host);
-    phase = SessionPhase.login;
-    notifyListeners();
     await probeActive();
     final saved = hosts.where((h) => h.host == host).firstOrNull;
-    if (saved?.token != null && saved!.autoLogin) {
-      await connect(host: host, existingToken: saved.token!);
+    final savedToken = saved?.token;
+    if (savedToken != null && savedToken.isNotEmpty) {
+      await connect(host: host, existingToken: savedToken);
+      return;
     }
+    phase = SessionPhase.login;
+    notifyListeners();
   }
 
   Future<ServerInfo?> probe(String host) async {
@@ -388,25 +415,23 @@ class SessionController extends ChangeNotifier {
     token = existingToken;
     activeHost = host;
     httpApi = HttpApi(originOf(host));
+    _klipyDiscover = null;
+    serverKlipyKey = hosts.where((h) => h.host == host).firstOrNull?.klipy;
+    _recoverTimer?.cancel();
+    _recovering = false;
+    _recoverAttempts = 0;
     notifyListeners();
     try {
+      await trpc?.close(silent: true);
       trpc = TrpcClient(
         url: trpcWsUrl(originOf(host)),
         connectionParams: () => {
           'token': token ?? '',
           'deviceToken': store.deviceToken(),
+          'client': kurierClientKind(),
         },
       );
-      trpc!.onClose = (code, reason) {
-        if (phase != SessionPhase.ready) return;
-        if (!_closingByUser) {
-          PlatformBridge.playSound(KurierSoundType.serverDisconnected);
-        }
-        disconnectCode = code;
-        disconnectReason = reason;
-        phase = SessionPhase.disconnected;
-        notifyListeners();
-      };
+      _attachTrpcClose(trpc!);
       await trpc!.connect();
       final handshake = await trpc!.query('others.handshake');
       final hs = handshake is Map ? Map<String, dynamic>.from(handshake) : {};
@@ -421,8 +446,10 @@ class SessionController extends ChangeNotifier {
         'handshakeHash': hs['handshakeHash'],
         if (serverPassword != null) 'password': serverPassword,
       });
-      join = JoinPayload.fromJson(Map<String, dynamic>.from(raw as Map));
+      final rawMap = Map<String, dynamic>.from(raw as Map);
+      join = JoinPayload.fromJson(rawMap);
       _applyJoin(join!);
+      await _adoptServerKlipy(rawMap);
       await _subscribeAll();
       try {
         dms = ((await trpc!.query('dms.get')) as List)
@@ -449,14 +476,24 @@ class SessionController extends ChangeNotifier {
       }
       if (showWelcome) overlay = 'welcome';
       _log('joined $serverName');
+      final remotePrefs = await androidLoadPrefs(trpc: trpc);
+      if (remotePrefs != null) {
+        await store.applyNotifyPrefs(
+          notifyAll: remotePrefs.notifyAll,
+          mentions: remotePrefs.mentions,
+          dm: remotePrefs.dm,
+          replies: remotePrefs.replies,
+        );
+      }
       await androidOnLogin(
         trpc: trpc,
         origin: originOf(host),
         jwt: token ?? existingToken,
-        notifyAll: store.notifyAll,
-        mentions: store.notifyMentions,
-        dm: store.notifyDm,
-        replies: store.notifyReplies,
+      );
+      unawaited(
+        androidSyncKeepAlive(
+          serverName: serverName.isEmpty ? 'Kurier' : serverName,
+        ),
       );
       final link = takePendingDeepLink();
       if (link?.channelId != null) {
@@ -467,8 +504,142 @@ class SessionController extends ChangeNotifier {
       error = '$e';
       phase = SessionPhase.login;
       _log('connect: $e');
+      unawaited(androidStopKeepAlive());
       notifyListeners();
     }
+  }
+
+  void _attachTrpcClose(TrpcClient client) {
+    client.onClose = (code, reason) {
+      if (_closingByUser || _recovering) return;
+      if (phase != SessionPhase.ready) return;
+      unawaited(_onSocketClosed(code, reason));
+    };
+  }
+
+  Future<void> _onSocketClosed(int code, String reason) async {
+    if (isFatalDisconnectCode(code)) {
+      _goDisconnected(code, reason);
+      return;
+    }
+    await _recoverConnection(code, reason);
+  }
+
+  void _goDisconnected(int code, String reason) {
+    _recoverTimer?.cancel();
+    _recovering = false;
+    unawaited(androidStopKeepAlive());
+    if (!_closingByUser) {
+      PlatformBridge.playSound(KurierSoundType.serverDisconnected);
+    }
+    disconnectCode = code;
+    disconnectReason = reason;
+    phase = SessionPhase.disconnected;
+    notifyListeners();
+  }
+
+  Future<void> _recoverConnection(int code, String reason) async {
+    final host = activeHost;
+    final existingToken = token;
+    if (host == null || existingToken == null || existingToken.isEmpty) {
+      _goDisconnected(code, reason);
+      return;
+    }
+    if (_recovering) return;
+    _recovering = true;
+    _recoverAttempts++;
+    _log('socket closed ($code), reconnecting attempt $_recoverAttempts');
+    final voiceId = connectedVoiceChannelId;
+    try {
+      await trpc?.close(silent: true);
+      trpc = TrpcClient(
+        url: trpcWsUrl(originOf(host)),
+        connectionParams: () => {
+          'token': token ?? '',
+          'deviceToken': store.deviceToken(),
+          'client': kurierClientKind(),
+        },
+      );
+      _attachTrpcClose(trpc!);
+      await trpc!.connect().timeout(const Duration(seconds: 15));
+      final handshake = await trpc!.query('others.handshake');
+      final hs = handshake is Map ? Map<String, dynamic>.from(handshake) : {};
+      final raw = await trpc!.query('others.joinServer', {
+        'handshakeHash': hs['handshakeHash'],
+      });
+      final rawMap = Map<String, dynamic>.from(raw as Map);
+      join = JoinPayload.fromJson(rawMap);
+      _applyJoin(join!);
+      await _subscribeAll();
+      await androidOnLogin(
+        trpc: trpc,
+        origin: originOf(host),
+        jwt: existingToken,
+      );
+      unawaited(
+        androidSyncKeepAlive(
+          serverName: serverName.isEmpty ? 'Kurier' : serverName,
+          voiceChannelName: voiceId == null ? null : channels[voiceId]?.name,
+        ),
+      );
+      _recoverAttempts = 0;
+      _recovering = false;
+      if (voiceId != null) {
+        connectedVoiceChannelId = voiceId;
+        unawaited(_silentRejoinVoice());
+      }
+      notifyListeners();
+    } catch (e) {
+      _log('reconnect: $e');
+      _recovering = false;
+      if (_recoverAttempts >= 8) {
+        _goDisconnected(code, reason);
+        return;
+      }
+      final shift = (_recoverAttempts.clamp(1, 6)) - 1;
+      _recoverTimer?.cancel();
+      _recoverTimer = Timer(Duration(milliseconds: 500 * (1 << shift)), () {
+        unawaited(_recoverConnection(code, reason));
+      });
+    }
+  }
+
+  void onAppResumed() {
+    if (phase == SessionPhase.disconnected) {
+      final host = activeHost;
+      final existing =
+          hosts.where((h) => h.host == host).firstOrNull?.token ?? token;
+      if (host != null && existing != null && existing.isNotEmpty) {
+        unawaited(connect(host: host, existingToken: existing));
+      }
+      return;
+    }
+    if (phase != SessionPhase.ready) return;
+    if (trpc == null || !trpc!.isOpen) {
+      if (!_recovering) {
+        unawaited(_recoverConnection(1006, 'app resumed'));
+      }
+      return;
+    }
+    final link = takePendingDeepLink();
+    if (link?.channelId != null) {
+      unawaited(jumpToMessage(link!.channelId!, link.messageId ?? 0));
+    } else if (selectedChannelId != null) {
+      unawaited(androidClearChannelNotifications(selectedChannelId!));
+    }
+    if (connectedVoiceChannelId != null) {
+      unawaited(() async {
+        await _restartIceBoth();
+        PlatformBridge.resumePlayback();
+        await _resyncRemoteProducers();
+        await ensureAudioProducer();
+      }());
+    }
+  }
+
+  @visibleForTesting
+  Future<void> handleGatewayClosed(int code, String reason) {
+    return _onSocketClosed(code, reason);
   }
 
   void _applyJoin(JoinPayload j) {
@@ -702,6 +873,18 @@ class SessionController extends ChangeNotifier {
     notifyListeners();
   }
 
+  String? _notifyChannelLabel(int channelId, {required bool isDm}) {
+    final channel = channels[channelId];
+    if (isDm || (channel?.isDm ?? false)) {
+      final fromChannel = channel?.name.trim();
+      if (fromChannel != null && fromChannel.isNotEmpty) return fromChannel;
+      return null;
+    }
+    final name = channel?.name.trim() ?? '';
+    if (name.isEmpty) return null;
+    return name.startsWith('#') ? name : '#$name';
+  }
+
   void _notifyIncoming(KurierMessage msg) {
     final mentioned = hasMention(msg.content, ownUserId);
     final isDm = channels[msg.channelId]?.isDm ?? false;
@@ -722,18 +905,41 @@ class SessionController extends ChangeNotifier {
             level == 'all' ||
             (level == 'mentions' && mentioned))) {
       final user = users[msg.userId];
-      PlatformBridge.notify(
-        user?.displayName ?? 'Kurier',
-        htmlToPlainText(msg.content ?? ''),
+      final kind = PushKind.classify(
+        isDm: isDm,
+        mentioned: mentioned,
+        replyToMe: replyToMe,
       );
+      final title = user?.displayName ?? 'Kurier';
+      final body = htmlToPlainText(msg.content ?? '');
+      final channelName = _notifyChannelLabel(msg.channelId, isDm: isDm);
+      if (isNativeMobile) {
+        final viewingHere =
+            androidIsAppForeground && selectedChannelId == msg.channelId;
+        if (!viewingHere) {
+          unawaited(
+            androidShowIncomingNotification(
+              title: title,
+              body: body,
+              kind: kind.wire,
+              channelId: msg.channelId,
+              messageId: msg.id,
+              channelName: channelName,
+            ),
+          );
+        }
+      } else {
+        PlatformBridge.notify(title, body, kind: kind.wire);
+      }
     }
     if (shouldPlayIncomingMessageSound(
-      isOwn: msg.userId == ownUserId,
-      mentioned: mentioned,
-      channelOverride: level,
-      soundMention: store.soundMention,
-      soundMessage: store.soundMessage,
-    )) {
+          isOwn: msg.userId == ownUserId,
+          mentioned: mentioned,
+          channelOverride: level,
+          soundMention: store.soundMention,
+          soundMessage: store.soundMessage,
+        ) &&
+        (!isNativeMobile || androidIsAppForeground)) {
       PlatformBridge.playSound(KurierSoundType.messageReceived);
     }
   }
@@ -810,7 +1016,10 @@ class SessionController extends ChangeNotifier {
     final id = extractUserId(d);
     if (id == null) return;
     final u = users[id];
-    if (u != null) u.status = 'offline';
+    if (u != null) {
+      u.status = 'offline';
+      u.mobile = false;
+    }
     notifyListeners();
   }
 
@@ -821,6 +1030,7 @@ class SessionController extends ChangeNotifier {
     if (u == null) return;
     u.deleted = true;
     u.status = 'offline';
+    u.mobile = false;
     notifyListeners();
   }
 
@@ -1065,6 +1275,8 @@ class SessionController extends ChangeNotifier {
     final m = _map(d);
     publicSettings.addAll(m);
     if (m['name'] is String) serverName = m['name'] as String;
+    final hinted = klipyKeyFromServerMap(m);
+    if (hinted != null) unawaited(_setServerKlipy(hinted));
     notifyListeners();
   }
 
@@ -1369,6 +1581,7 @@ class SessionController extends ChangeNotifier {
     selectedChannelId = id;
     threadParentId = null;
     replyTo = null;
+    unawaited(androidClearChannelNotifications(id));
     if (previous != null) _trimChannel(previous);
     if (activeHost != null) await store.setLastChannel(activeHost!, id);
     final ch = channels[id];
@@ -1484,7 +1697,46 @@ class SessionController extends ChangeNotifier {
   }
 
   String get gifApiKey {
-    return AppConfig.klipyKeyFor(stored: store.klipy, host: activeHost);
+    return AppConfig.klipyKeyFor(
+      stored: store.klipy,
+      host: activeHost,
+      discovered: serverKlipyKey,
+    );
+  }
+
+  Future<void> _adoptServerKlipy(Map<String, dynamic> raw) async {
+    final hinted = klipyKeyFromServerMap(raw);
+    if (hinted != null) await _setServerKlipy(hinted);
+    final host = activeHost;
+    if (host == null || httpApi == null) return;
+    _klipyDiscover ??= _discoverServerKlipy(host);
+  }
+
+  Future<void> ensureServerKlipyKey() {
+    if ((serverKlipyKey ?? '').trim().isNotEmpty) return Future.value();
+    if (_klipyDiscover != null) return _klipyDiscover!;
+    final host = activeHost;
+    if (host == null || httpApi == null) return Future.value();
+    _klipyDiscover = _discoverServerKlipy(host);
+    return _klipyDiscover!;
+  }
+
+  Future<void> _discoverServerKlipy(String host) async {
+    final key = await tryDiscoverKlipyKey(origin: originOf(host));
+    if (key == null || key.isEmpty) return;
+    await _setServerKlipy(key);
+  }
+
+  Future<void> _setServerKlipy(String key) async {
+    final trimmed = key.trim();
+    if (trimmed.isEmpty) return;
+    serverKlipyKey = trimmed;
+    final idx = hosts.indexWhere((h) => h.host == activeHost);
+    if (idx >= 0 && hosts[idx].klipy != trimmed) {
+      hosts[idx].klipy = trimmed;
+      await store.saveHosts(hosts);
+    }
+    notifyListeners();
   }
 
   /// Search GIFs via vanilla `gifs.search`, then KLIPY trending/search.
@@ -1965,7 +2217,10 @@ class SessionController extends ChangeNotifier {
     }
     if (connectedVoiceChannelId != null) {
       final voiceName = channels[connectedVoiceChannelId!]?.name ?? 'voice';
-      await androidStartVoice(channelName: voiceName);
+      await androidSyncKeepAlive(
+        serverName: serverName.isEmpty ? 'Kurier' : serverName,
+        voiceChannelName: voiceName,
+      );
       await androidSyncPip(webcam: webcam, sharing: sharing);
     }
     notifyListeners();
@@ -2362,6 +2617,13 @@ class SessionController extends ChangeNotifier {
     PlatformBridge.setKeepScreenAwake(false);
     PlatformBridge.closeAll();
     unawaited(androidStopVoice());
+    if (!_silentRejoining && phase == SessionPhase.ready) {
+      unawaited(
+        androidSyncKeepAlive(
+          serverName: serverName.isEmpty ? 'Kurier' : serverName,
+        ),
+      );
+    }
     webcam = false;
     sharing = false;
     voiceState = 'idle';
@@ -2919,6 +3181,10 @@ class SessionController extends ChangeNotifier {
 
   Future<void> disconnect({bool forgetToken = true}) async {
     _closingByUser = true;
+    _recoverTimer?.cancel();
+    _recovering = false;
+    _recoverAttempts = 0;
+    unawaited(androidStopKeepAlive());
     _typingSweep?.cancel();
     _stopVoiceStats();
     PlatformBridge.stopSoundKeepAlive();
@@ -2941,6 +3207,8 @@ class SessionController extends ChangeNotifier {
     }
     await androidOnLogout();
     join = null;
+    serverKlipyKey = null;
+    _klipyDiscover = null;
     users.clear();
     channels.clear();
     messages.clear();
@@ -3269,6 +3537,7 @@ class SessionController extends ChangeNotifier {
   void dispose() {
     _panelWidthSave?.cancel();
     _voiceStatsTimer?.cancel();
+    _recoverTimer?.cancel();
     _cancelProducerResyncs();
     super.dispose();
   }

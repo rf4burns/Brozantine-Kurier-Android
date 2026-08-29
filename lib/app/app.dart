@@ -38,8 +38,15 @@ class _KurierAppState extends ConsumerState<KurierApp>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      androidSetAppForeground(true);
+      ref.read(sessionProvider).onAppResumed();
+      return;
+    }
+    androidSetAppForeground(false);
     if (state == AppLifecycleState.paused ||
-        state == AppLifecycleState.inactive) {
+        state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.hidden) {
       if (androidAppLockEnabled) setState(() => _locked = true);
     }
   }

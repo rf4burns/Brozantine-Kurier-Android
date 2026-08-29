@@ -7,7 +7,9 @@
     <uses-permission android:name="android.permission.WAKE_LOCK"/>
     <uses-permission android:name="android.permission.VIBRATE"/>
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION"/>
@@ -69,10 +71,15 @@
             </intent-filter>
         </activity>
         <service
-            android:name="com.pravera.flutter_foreground_task.service.ForegroundService"
-            android:foregroundServiceType="microphone|mediaPlayback|connectedDevice"
+            android:name=".KurierForegroundService"
             android:exported="false"
-            android:stopWithTask="true" />
+            android:foregroundServiceType="dataSync|microphone|mediaPlayback"
+            android:stopWithTask="false" />
+        <service
+            android:name="com.pravera.flutter_foreground_task.service.ForegroundService"
+            android:foregroundServiceType="dataSync|microphone|mediaPlayback"
+            android:exported="false"
+            android:stopWithTask="false" />
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />

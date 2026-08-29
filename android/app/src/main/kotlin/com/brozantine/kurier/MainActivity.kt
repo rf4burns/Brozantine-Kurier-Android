@@ -1,5 +1,6 @@
 package com.brozantine.kurier
 
+import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
@@ -8,29 +9,62 @@ import android.content.Context
 import android.content.Intent
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
+import android.net.Uri
 import android.os.Build
-import android.os.Bundle
+import android.os.PowerManager
+import android.provider.Settings
 import android.util.Rational
 import androidx.core.app.NotificationCompat
 import io.flutter.embedding.android.FlutterFragmentActivity
 import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterFragmentActivity() {
     private val nativeChannel = "com.brozantine.kurier/native"
     private val audioChannel = "com.brozantine.kurier/audio"
     private var pipWhenLeaving = false
+    private var nativeMethodChannel: MethodChannel? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
-        ensureMessageChannel()
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, nativeChannel)
-            .setMethodCallHandler { call, result ->
+        ensureNotificationChannels()
+        val channel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, nativeChannel)
+        nativeMethodChannel = channel
+        KurierForegroundService.actionListener = { action ->
+            runOnUiThread { channel.invokeMethod("voiceAction", action) }
+        }
+        channel.setMethodCallHandler { call, result ->
                 when (call.method) {
                     "notify" -> {
                         val title = call.argument<String>("title") ?: "Kurier"
                         val body = call.argument<String>("body") ?: ""
-                        showLocalNotification(title, body)
+                        val kind = call.argument<String>("kind") ?: "message"
+                        val lines = (call.argument<List<*>>("lines") ?: emptyList<Any>())
+                            .mapNotNull { it?.toString()?.trim() }
+                            .filter { it.isNotEmpty() }
+                        val chatChannelId = intArg(call, "chatChannelId")
+                        val messageId = intArg(call, "messageId")
+                        val silent = call.argument<Boolean>("silent") == true
+                        showLocalNotification(
+                            title,
+                            body,
+                            channelIdForKind(kind),
+                            kind,
+                            lines,
+                            chatChannelId,
+                            messageId,
+                            silent,
+                        )
+                        result.success(null)
+                    }
+                    "cancelNotify" -> {
+                        val kind = call.argument<String>("kind") ?: "message"
+                        cancelChatNotification(kind)
+                        result.success(null)
+                    }
+                    "openNotificationSettings" -> {
+                        openNotificationSettings()
                         result.success(null)
                     }
                     "enterPip" -> {
@@ -38,6 +72,17 @@ class MainActivity : FlutterFragmentActivity() {
                     }
                     "setPipAuto" -> {
                         pipWhenLeaving = call.argument<Boolean>("enabled") == true
+                        result.success(null)
+                    }
+                    "startKeepAlive" -> {
+                        val server = call.argument<String>("serverName") ?: "Kurier"
+                        val voice = call.argument<String>("voiceChannelName")
+                        requestIgnoreBatteryOptimizations()
+                        KurierForegroundService.start(this, server, voice)
+                        result.success(null)
+                    }
+                    "stopKeepAlive" -> {
+                        KurierForegroundService.stop(this)
                         result.success(null)
                     }
                     else -> result.notImplemented()
@@ -64,6 +109,28 @@ class MainActivity : FlutterFragmentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        deliverNotificationTap(intent)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        deliverNotificationTap(intent)
+    }
+
+    private fun requestIgnoreBatteryOptimizations() {
+        if (askedBattery) return
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
+        val pm = getSystemService(PowerManager::class.java) ?: return
+        if (pm.isIgnoringBatteryOptimizations(packageName)) return
+        askedBattery = true
+        try {
+            startActivity(
+                Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                    data = Uri.parse("package:$packageName")
+                },
+            )
+        } catch (_: Exception) {
+        }
     }
 
     private fun enterPip(): Boolean {
@@ -152,33 +219,132 @@ class MainActivity : FlutterFragmentActivity() {
         return true
     }
 
-    private fun ensureMessageChannel() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
-        val manager = getSystemService(NotificationManager::class.java)
-        val channel = NotificationChannel(
-            "kurier_messages",
-            "Messages",
-            NotificationManager.IMPORTANCE_HIGH,
-        )
-        manager.createNotificationChannel(channel)
+    private fun channelIdForKind(kind: String): String = when (kind) {
+        "mention" -> "kurier_mentions"
+        "dm" -> "kurier_dms"
+        "reply" -> "kurier_replies"
+        else -> "kurier_messages"
     }
 
-    private fun showLocalNotification(title: String, body: String) {
-        val launch = packageManager.getLaunchIntentForPackage(packageName)
+    private fun ensureNotificationChannels() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        val manager = getSystemService(NotificationManager::class.java)
+        val channels = listOf(
+            "kurier_messages" to "Messages",
+            "kurier_mentions" to "Mentions",
+            "kurier_dms" to "Direct messages",
+            "kurier_replies" to "Replies",
+        )
+        for ((id, name) in channels) {
+            manager.createNotificationChannel(
+                NotificationChannel(id, name, NotificationManager.IMPORTANCE_HIGH).apply {
+                    enableVibration(true)
+                    lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+                },
+            )
+        }
+    }
+
+    private fun openNotificationSettings() {
+        val intent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+            putExtra(Settings.EXTRA_APP_PACKAGE, packageName)
+        }
+        startActivity(intent)
+    }
+
+    private fun intArg(call: MethodCall, key: String): Int? {
+        val value = call.argument<Any>(key) ?: return null
+        return when (value) {
+            is Int -> value
+            is Long -> value.toInt()
+            is Double -> value.toInt()
+            is Number -> value.toInt()
+            else -> value.toString().toIntOrNull()
+        }
+    }
+
+    private fun notificationIdForKind(kind: String): Int = when (kind) {
+        "mention" -> 1002
+        "dm" -> 1003
+        "reply" -> 1004
+        else -> 1001
+    }
+
+    private fun cancelChatNotification(kind: String) {
+        val manager = getSystemService(NotificationManager::class.java)
+        manager.cancel(notificationIdForKind(kind))
+    }
+
+    private fun deliverNotificationTap(intent: Intent?) {
+        val kind = intent?.getStringExtra(EXTRA_KIND) ?: return
+        val channelId = intent.getIntExtra(EXTRA_CHANNEL, 0)
+        val messageId = intent.getIntExtra(EXTRA_MESSAGE, 0)
+        intent.removeExtra(EXTRA_KIND)
+        nativeMethodChannel?.invokeMethod(
+            "notificationOpened",
+            mapOf(
+                "kind" to kind,
+                "channelId" to channelId,
+                "chatChannelId" to channelId,
+                "messageId" to messageId,
+            ),
+        )
+    }
+
+    private fun showLocalNotification(
+        title: String,
+        body: String,
+        channelId: String,
+        kind: String,
+        lines: List<String>,
+        chatChannelId: Int?,
+        messageId: Int?,
+        silent: Boolean,
+    ) {
+        ensureNotificationChannels()
+        val launch = (packageManager.getLaunchIntentForPackage(packageName)
+            ?: Intent(this, MainActivity::class.java)).apply {
+            addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            putExtra(EXTRA_KIND, kind)
+            putExtra(EXTRA_CHANNEL, chatChannelId ?: 0)
+            putExtra(EXTRA_MESSAGE, messageId ?: 0)
+        }
+        val id = notificationIdForKind(kind)
         val pending = PendingIntent.getActivity(
             this,
-            0,
+            id,
             launch,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
-        val notification = NotificationCompat.Builder(this, "kurier_messages")
+        val displayLines = if (lines.isNotEmpty()) lines else listOfNotNull(body.takeIf { it.isNotBlank() })
+        val inbox = NotificationCompat.InboxStyle().setBigContentTitle(title)
+        for (line in displayLines) {
+            inbox.addLine(line)
+        }
+        val builder = NotificationCompat.Builder(this, channelId)
             .setSmallIcon(R.drawable.ic_stat_kurier)
             .setContentTitle(title)
             .setContentText(body)
+            .setStyle(inbox)
             .setContentIntent(pending)
             .setAutoCancel(true)
-            .build()
+            .setNumber(displayLines.size.coerceAtLeast(1))
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+        if (silent) {
+            builder.setSilent(true).setOnlyAlertOnce(true)
+        } else {
+            builder.setDefaults(NotificationCompat.DEFAULT_ALL)
+        }
         val manager = getSystemService(NotificationManager::class.java)
-        manager.notify((System.currentTimeMillis() % Int.MAX_VALUE).toInt(), notification)
+        manager.notify(id, builder.build())
+    }
+
+    companion object {
+        private var askedBattery = false
+        private const val EXTRA_KIND = "kurier.kind"
+        private const val EXTRA_CHANNEL = "kurier.channelId"
+        private const val EXTRA_MESSAGE = "kurier.messageId"
     }
 }
