@@ -2,7 +2,8 @@ import 'package:flutter/material.dart';
 
 import '../app/theme.dart';
 import 'attachment_media_stub.dart'
-    if (dart.library.js_interop) 'attachment_media_web.dart' as impl;
+    if (dart.library.js_interop) 'attachment_media_web.dart'
+    if (dart.library.io) 'attachment_media_io.dart' as impl;
 
 Key videoAttachmentKey(String id) => Key('video-attachment-$id');
 

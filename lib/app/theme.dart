@@ -15,7 +15,9 @@ enum ThemePreset {
   arctic,
 }
 
-const defaultAccent = Color(0xFF5865F2);
+const overlayAccent = Color(0xFF5865F2);
+const kurierAccent = Color(0xFF3B82F6);
+const defaultAccent = overlayAccent;
 
 const accentSwatches = [
   Color(0xFF5865F2),

@@ -18,6 +18,8 @@
   </p>
 </div>
 
+Native Android is in this tree (`android/`). See [ANDROID.md](ANDROID.md). That app does not ship a default host. This overlay remains the web client.
+
 This repo is the Brozantine **Flutter web overlay** for [Kurier](https://github.com/rf4burns/brozantine-sharkord-server): a self-hosted messenger (Sharkord fork) with a Bun server, tRPC, SQLite, and mediasoup. It is a separate client, not a patch of the in-tree React UI.
 
 > [!NOTE]

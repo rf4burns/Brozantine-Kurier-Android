@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
 
 import '../app/breakpoints.dart';
+import '../app/app_platform.dart';
 import '../core/custom_emoji.dart';
 import '../core/emoji_codec.dart';
 import '../core/emoji_recent.dart';
@@ -24,6 +25,7 @@ import '../protocol/sounds.dart';
 import '../protocol/trpc_client.dart';
 import '../protocol/voice_protocol.dart';
 import '../protocol/voice_stats.dart';
+import '../native/android_runtime.dart';
 import 'hosts_store.dart';
 import 'message_history.dart';
 
@@ -182,9 +184,19 @@ class SessionController extends ChangeNotifier {
     sidebarWidth = store.sidebarWidth;
     membersWidth = store.membersWidth;
     pendingInvite = Uri.base.queryParameters['invite'];
+    onVoiceNotificationAction = (action) {
+      if (action == 'mute') {
+        setMicMuted(!micMuted);
+      } else if (action == 'deafen') {
+        setSoundMuted(!soundMuted);
+      } else if (action == 'leave') {
+        leaveVoice();
+      }
+    };
     await _ensureDefaultHost();
     phase = SessionPhase.login;
     notifyListeners();
+    if (isNativeMobile && activeHost == null) return;
     await probeActive();
     final host = hosts.where((h) => h.host == activeHost).firstOrNull;
     if (host?.token != null && host!.autoLogin) {
@@ -198,6 +210,16 @@ class SessionController extends ChangeNotifier {
   }
 
   Future<void> _ensureDefaultHost() async {
+    if (isNativeMobile) {
+      final saved = store.defaultHost;
+      if (saved != null && hosts.any((h) => h.host == saved)) {
+        activeHost = saved;
+      } else {
+        activeHost = null;
+        if (saved != null) await store.setDefaultHost(null);
+      }
+      return;
+    }
     final pageHost = Uri.base.host;
     final fromPage = !_isLoopback(pageHost);
     final target = fromPage ? pageHost : AppConfig.defaultHost;
@@ -262,10 +284,14 @@ class SessionController extends ChangeNotifier {
       notifyListeners();
       return;
     }
+    final first = hosts.isEmpty;
     hosts = [...hosts, SavedHost(host: host, name: host)];
     activeHost = host;
     await store.saveHosts(hosts);
     await store.setActiveHost(host);
+    if (isNativeMobile && (first || store.defaultHost == null)) {
+      await store.setDefaultHost(host);
+    }
     notifyListeners();
     await probeActive();
   }
@@ -274,9 +300,22 @@ class SessionController extends ChangeNotifier {
     hosts = hosts.where((h) => h.host != host).toList();
     await store.saveHosts(hosts);
     if (activeHost == host) {
-      activeHost = hosts.isEmpty ? null : hosts.first.host;
-      await store.setActiveHost(activeHost);
+      if (isNativeMobile) {
+        activeHost = null;
+        await store.setActiveHost(null);
+      } else {
+        activeHost = hosts.isEmpty ? null : hosts.first.host;
+        await store.setActiveHost(activeHost);
+      }
     }
+    if (store.defaultHost == host) {
+      await store.setDefaultHost(null);
+    }
+    notifyListeners();
+  }
+
+  Future<void> setDefaultHost(String host) async {
+    await store.setDefaultHost(host);
     notifyListeners();
   }
 
@@ -410,6 +449,19 @@ class SessionController extends ChangeNotifier {
       }
       if (showWelcome) overlay = 'welcome';
       _log('joined $serverName');
+      await androidOnLogin(
+        trpc: trpc,
+        origin: originOf(host),
+        jwt: token ?? existingToken,
+        notifyAll: store.notifyAll,
+        mentions: store.notifyMentions,
+        dm: store.notifyDm,
+        replies: store.notifyReplies,
+      );
+      final link = takePendingDeepLink();
+      if (link?.channelId != null) {
+        await jumpToMessage(link!.channelId!, link.messageId ?? 0);
+      }
       notifyListeners();
     } catch (e) {
       error = '$e';
@@ -1911,6 +1963,11 @@ class SessionController extends ChangeNotifier {
         await _failVoice(e);
       }
     }
+    if (connectedVoiceChannelId != null) {
+      final voiceName = channels[connectedVoiceChannelId!]?.name ?? 'voice';
+      await androidStartVoice(channelName: voiceName);
+      await androidSyncPip(webcam: webcam, sharing: sharing);
+    }
     notifyListeners();
   }
 
@@ -2304,6 +2361,7 @@ class SessionController extends ChangeNotifier {
     connectedVoiceChannelId = null;
     PlatformBridge.setKeepScreenAwake(false);
     PlatformBridge.closeAll();
+    unawaited(androidStopVoice());
     webcam = false;
     sharing = false;
     voiceState = 'idle';
@@ -2468,6 +2526,7 @@ class SessionController extends ChangeNotifier {
       webcam = true;
       PlatformBridge.playSound(KurierSoundType.ownUserStartedWebcam);
     }
+    await androidSyncPip(webcam: webcam, sharing: sharing);
     await _syncVoiceState();
     notifyListeners();
   }
@@ -2497,6 +2556,7 @@ class SessionController extends ChangeNotifier {
       }
       sharing = true;
       PlatformBridge.playSound(KurierSoundType.ownUserStartedScreenshare);
+      await androidSyncPip(webcam: webcam, sharing: sharing);
       await _syncVoiceState();
       notifyListeners();
     }
@@ -2511,7 +2571,14 @@ class SessionController extends ChangeNotifier {
     if (!sharing) return;
     sharing = false;
     PlatformBridge.playSound(KurierSoundType.ownUserStoppedScreenshare);
+    await androidSyncPip(webcam: webcam, sharing: sharing);
     await _syncVoiceState();
+    notifyListeners();
+  }
+
+  Future<void> changeShareSource({bool withAudio = false}) async {
+    if (connectedVoiceChannelId == null || !sharing) return;
+    await PlatformBridge.getDisplayMedia(withAudio: withAudio);
     notifyListeners();
   }
 
@@ -2872,6 +2939,7 @@ class SessionController extends ChangeNotifier {
       if (idx >= 0) hosts[idx].token = null;
       await store.saveHosts(hosts);
     }
+    await androidOnLogout();
     join = null;
     users.clear();
     channels.clear();

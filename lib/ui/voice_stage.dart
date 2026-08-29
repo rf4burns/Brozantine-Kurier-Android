@@ -13,7 +13,8 @@ import '../protocol/voice_protocol.dart';
 import '../session/session_controller.dart';
 import 'context_menu.dart';
 import 'media_stream_view_stub.dart'
-    if (dart.library.js_interop) 'media_stream_view_web.dart';
+    if (dart.library.js_interop) 'media_stream_view_web.dart'
+    if (dart.library.io) 'media_stream_view_io.dart';
 import 'member_context_menu.dart';
 import 'shared.dart';
 import 'transport_stats_popover.dart';
@@ -1451,6 +1452,16 @@ class VoiceControlBar extends StatelessWidget {
                     activeColor: const Color(0xFF60A5FA),
                     onPressed: () => s.toggleScreen(),
                   ),
+                  if (s.sharing) ...[
+                    const SizedBox(width: 4),
+                    _VoiceMediaButton(
+                      tooltip: l('changeShare'),
+                      icon: Icons.swap_horiz,
+                      active: true,
+                      activeColor: const Color(0xFF60A5FA),
+                      onPressed: () => s.changeShareSource(),
+                    ),
+                  ],
                 ],
               ],
             ),

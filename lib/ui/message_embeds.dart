@@ -10,8 +10,10 @@ import '../protocol/models.dart';
 import '../session/session_controller.dart';
 import 'attachment_media.dart';
 import 'gif_favourite_star.dart';
+import 'image_lightbox.dart';
 import 'youtube_iframe_stub.dart'
-    if (dart.library.js_interop) 'youtube_iframe_web.dart';
+    if (dart.library.js_interop) 'youtube_iframe_web.dart'
+    if (dart.library.io) 'youtube_iframe_io.dart';
 
 final _urlPattern = RegExp(r'''https?://[^\s<>"']+''', caseSensitive: false);
 final _youtubeIdPattern = RegExp(r'^[\w-]{11}$');
@@ -628,22 +630,26 @@ class _MediaImage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    Widget image = GestureDetector(
-      onTap: () => _openUrl(url),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(8),
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 400, maxHeight: 300),
-          child: Image.network(
-            url,
-            fit: BoxFit.cover,
-            errorBuilder: (_, _, _) => showFavourite
-                ? const SizedBox(
-                    width: 240,
-                    height: 160,
-                    child: ColoredBox(color: Color(0x33000000)),
-                  )
-                : const SizedBox.shrink(),
+    Widget image = MouseRegion(
+      cursor: SystemMouseCursors.zoomIn,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: () => showImageLightbox(context, url: url),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(8),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 400, maxHeight: 300),
+            child: Image.network(
+              url,
+              fit: BoxFit.cover,
+              errorBuilder: (_, _, _) => showFavourite
+                  ? const SizedBox(
+                      width: 240,
+                      height: 160,
+                      child: ColoredBox(color: Color(0x33000000)),
+                    )
+                  : const SizedBox.shrink(),
+            ),
           ),
         ),
       ),

@@ -20,6 +20,7 @@ import 'emoji_glyph.dart';
 import 'attachment_media.dart';
 import 'emoji_picker.dart';
 import 'gif_picker.dart';
+import 'image_lightbox.dart';
 import 'member_list.dart';
 import 'message_embeds.dart';
 import 'message_html.dart';
@@ -1086,18 +1087,30 @@ class MessageTile extends StatelessWidget {
     if (f.isImage) {
       return Padding(
         padding: const EdgeInsets.only(top: 4),
-        child: GestureDetector(
-          onTap: () {
-            showDialog<void>(
-              context: context,
-              builder: (_) => Dialog(child: Image.network(url)),
-            );
-          },
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 400, maxHeight: 300),
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(8),
-              child: Image.network(url, fit: BoxFit.contain),
+        child: MouseRegion(
+          cursor: SystemMouseCursors.zoomIn,
+          child: GestureDetector(
+            key: imageAttachmentKey(f.id),
+            behavior: HitTestBehavior.opaque,
+            onTap: () => showImageLightbox(context, url: url),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 400, maxHeight: 300),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(8),
+                child: url.isEmpty
+                    ? const ColoredBox(
+                        color: Color(0x33000000),
+                        child: SizedBox(width: 240, height: 160),
+                      )
+                    : Image.network(
+                        url,
+                        fit: BoxFit.contain,
+                        errorBuilder: (_, _, _) => const ColoredBox(
+                          color: Color(0x33000000),
+                          child: SizedBox(width: 240, height: 160),
+                        ),
+                      ),
+              ),
             ),
           ),
         ),

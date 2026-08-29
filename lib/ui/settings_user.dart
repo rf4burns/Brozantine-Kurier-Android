@@ -6,6 +6,8 @@ import 'package:flutter/services.dart';
 
 import '../app/l10n.dart';
 import '../app/theme.dart';
+import '../app/app_platform.dart';
+import '../native/android_runtime.dart';
 import '../protocol/audio_output.dart';
 import '../protocol/config.dart';
 import '../protocol/device_token.dart';
@@ -14,7 +16,8 @@ import '../protocol/platform.dart';
 import '../protocol/sounds.dart';
 import '../session/session_controller.dart';
 import 'media_stream_view_stub.dart'
-    if (dart.library.js_interop) 'media_stream_view_web.dart';
+    if (dart.library.js_interop) 'media_stream_view_web.dart'
+    if (dart.library.io) 'media_stream_view_io.dart';
 import 'member_context_menu.dart';
 import 'profile_card.dart';
 import 'settings_chrome.dart';
@@ -885,6 +888,13 @@ class NotificationsSettingsTab extends StatelessWidget {
           value: s.store.notifyAll,
           onChanged: (v) async {
             await s.store.setNotifyAll(v);
+            await androidSyncPrefs(
+              trpc: s.trpc,
+              notifyAll: v,
+              mentions: s.store.notifyMentions,
+              dm: s.store.notifyDm,
+              replies: s.store.notifyReplies,
+            );
             s.refresh();
           },
         ),
@@ -895,6 +905,13 @@ class NotificationsSettingsTab extends StatelessWidget {
           value: s.store.notifyMentions,
           onChanged: (v) async {
             await s.store.setNotifyMentions(v);
+            await androidSyncPrefs(
+              trpc: s.trpc,
+              notifyAll: s.store.notifyAll,
+              mentions: v,
+              dm: s.store.notifyDm,
+              replies: s.store.notifyReplies,
+            );
             s.refresh();
           },
         ),
@@ -905,6 +922,13 @@ class NotificationsSettingsTab extends StatelessWidget {
           value: s.store.notifyDm,
           onChanged: (v) async {
             await s.store.setNotifyDm(v);
+            await androidSyncPrefs(
+              trpc: s.trpc,
+              notifyAll: s.store.notifyAll,
+              mentions: s.store.notifyMentions,
+              dm: v,
+              replies: s.store.notifyReplies,
+            );
             s.refresh();
           },
         ),
@@ -915,9 +939,27 @@ class NotificationsSettingsTab extends StatelessWidget {
           value: s.store.notifyReplies,
           onChanged: (v) async {
             await s.store.setNotifyReplies(v);
+            await androidSyncPrefs(
+              trpc: s.trpc,
+              notifyAll: s.store.notifyAll,
+              mentions: s.store.notifyMentions,
+              dm: s.store.notifyDm,
+              replies: v,
+            );
             s.refresh();
           },
         ),
+        if (isNativeMobile)
+          SettingsToggleRow(
+            leadingSwitch: true,
+            label: l('appLock'),
+            description: l('appLockDesc'),
+            value: androidAppLockEnabled,
+            onChanged: (v) async {
+              await setAndroidAppLockEnabled(v);
+              s.refresh();
+            },
+          ),
       ],
     );
   }
@@ -1279,6 +1321,7 @@ class AboutSettingsTab extends StatelessWidget {
           '${l('version')}: ${AppConfig.versionLabel}',
           style: TextStyle(color: context.p.foreground),
         ),
+        Text(l('twemojiCredit'), style: TextStyle(color: context.p.muted)),
         Text(l('logs'), style: TextStyle(color: context.p.faint)),
         for (final line in s.logs.reversed.take(30))
           Text(line, style: TextStyle(color: context.p.muted, fontSize: 11)),

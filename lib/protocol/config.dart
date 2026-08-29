@@ -1,3 +1,5 @@
+import '../app/app_platform.dart';
+
 class AppConfig {
   static const webStamp = String.fromEnvironment(
     'KURIER_WEB_STAMP',
@@ -32,7 +34,7 @@ class AppConfig {
     final local = (stored ?? '').trim();
     if (local.isNotEmpty) return local;
     if (klipyKey.isNotEmpty) return klipyKey;
-    if (isBrozantineHost(host)) return brozantineKlipyKey;
+    if (!isNativeMobile && isBrozantineHost(host)) return brozantineKlipyKey;
     return '';
   }
 
@@ -44,8 +46,12 @@ class AppConfig {
   static const maxMessageLength = 4000;
   static const deletedUserName = '__deleted_user__';
 
-  static String get versionLabel =>
-      webStamp == 'dev' ? 'WEB (dev)' : 'WEB v$webStamp';
+  static String get versionLabel {
+    if (isNativeMobile) {
+      return webStamp == 'dev' ? 'ANDROID (dev)' : 'ANDROID v$webStamp';
+    }
+    return webStamp == 'dev' ? 'WEB (dev)' : 'WEB v$webStamp';
+  }
 
   static List<Map<String, String>> iceServers() {
     final servers = <Map<String, String>>[

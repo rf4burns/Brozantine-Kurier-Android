@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../app/l10n.dart';
+import '../app/app_platform.dart';
 import '../app/theme.dart';
 import '../protocol/config.dart';
 import '../protocol/http_api.dart';
@@ -26,7 +27,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   final confirm = TextEditingController();
   bool autoLogin = false;
   bool resetMode = false;
-  bool showHosts = false;
+  bool showHosts = isNativeMobile;
   String? questionId;
 
   @override
@@ -41,18 +42,34 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     super.dispose();
   }
 
+  bool _nativeHostInsecure(SessionController s) {
+    final host = s.activeHost;
+    if (host == null || host.isEmpty) return false;
+    final origin = s.originOf(host);
+    final uri = Uri.tryParse(origin);
+    if (uri == null) return true;
+    if (uri.scheme == 'https') return false;
+    return uri.host != 'localhost' && uri.host != '127.0.0.1';
+  }
+
   L10n get l => L10n.of(context);
 
   HttpApi _api(SessionController s) {
-    return s.httpApi ?? HttpApi(s.originOf(s.activeHost ?? AppConfig.defaultHost));
+    final host = s.activeHost ?? (isNativeMobile ? null : AppConfig.defaultHost);
+    if (host == null) {
+      throw StateError('No host');
+    }
+    return s.httpApi ?? HttpApi(s.originOf(host));
   }
 
   @override
   Widget build(BuildContext context) {
     final s = ref.watch(sessionProvider);
-    final insecure = Uri.base.scheme != 'https' &&
-        Uri.base.host != 'localhost' &&
-        Uri.base.host != '127.0.0.1';
+    final insecure = isNativeMobile
+        ? _nativeHostInsecure(s)
+        : Uri.base.scheme != 'https' &&
+            Uri.base.host != 'localhost' &&
+            Uri.base.host != '127.0.0.1';
     return Scaffold(
       backgroundColor: context.p.background,
       body: Stack(
@@ -355,9 +372,22 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
             for (final h in s.hosts)
               InputChip(
                 selected: h.host == s.activeHost,
+                avatar: isNativeMobile
+                    ? Icon(
+                        h.host == s.store.defaultHost
+                            ? Icons.star
+                            : Icons.star_border,
+                        size: 18,
+                      )
+                    : null,
                 label: Text(h.name ?? h.host),
                 onPressed: () => s.switchHost(h.host),
                 onDeleted: () => s.removeHost(h.host),
+              ),
+            if (isNativeMobile && s.hosts.isEmpty)
+              Text(
+                l('noServersYet'),
+                style: TextStyle(color: context.p.muted, fontSize: 13),
               ),
           ],
         ),
@@ -380,6 +410,22 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
             ),
           ],
         ),
+        if (isNativeMobile && s.activeHost != null) ...[
+          const SizedBox(height: 8),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton.icon(
+              onPressed: () => s.setDefaultHost(s.activeHost!),
+              icon: Icon(
+                s.activeHost == s.store.defaultHost
+                    ? Icons.star
+                    : Icons.star_border,
+                size: 18,
+              ),
+              label: Text(l('setAsDefault')),
+            ),
+          ),
+        ],
       ],
     );
   }
@@ -461,7 +507,8 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
         GestureDetector(
           onTap: () => setState(() => showHosts = !showHosts),
           child: Text(
-            s.activeHost ?? AppConfig.defaultHost,
+            s.activeHost ??
+                (isNativeMobile ? l('addServer') : AppConfig.defaultHost),
             style: TextStyle(color: context.p.faint, fontSize: 11),
           ),
         ),

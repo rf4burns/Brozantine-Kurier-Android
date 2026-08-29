@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../app/breakpoints.dart';
+import '../app/app_platform.dart';
 import '../protocol/device_token.dart';
 import '../protocol/models.dart';
 import '../protocol/platform.dart';
@@ -10,6 +11,7 @@ import '../protocol/platform.dart';
 class HostsStore {
   static const _hostsKey = 'kurier.hosts';
   static const _activeKey = 'kurier.activeHost';
+  static const _defaultHostKey = 'kurier.defaultHost';
   static const _deviceKey = 'kurier.deviceToken';
   static const _presetKey = 'kurier.themePreset';
   static const _accentKey = 'kurier.themeAccent';
@@ -79,6 +81,15 @@ class HostsStore {
     }
   }
 
+  String? get defaultHost => _p?.getString(_defaultHostKey);
+  Future<void> setDefaultHost(String? host) async {
+    if (host == null) {
+      await _p?.remove(_defaultHostKey);
+    } else {
+      await _p?.setString(_defaultHostKey, host);
+    }
+  }
+
   String deviceToken() {
     final t = resolveDeviceToken(
       fromPrefs: _p?.getString(_deviceKey),
@@ -96,7 +107,8 @@ class HostsStore {
   String get preset => _p?.getString(_presetKey) ?? 'dark';
   Future<void> setPreset(String v) => _p!.setString(_presetKey, v);
 
-  String get accent => _p?.getString(_accentKey) ?? '#5865F2';
+  String get accent =>
+      _p?.getString(_accentKey) ?? (isNativeMobile ? '#3B82F6' : '#5865F2');
   Future<void> setAccent(String v) => _p!.setString(_accentKey, v);
 
   String get locale => _p?.getString(_localeKey) ?? 'en';

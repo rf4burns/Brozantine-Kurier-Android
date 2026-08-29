@@ -7,6 +7,7 @@ import '../app/theme.dart';
 import '../protocol/models.dart';
 import '../protocol/permissions.dart';
 import '../session/session_controller.dart';
+import '../native/android_runtime.dart';
 import 'chat_panel.dart';
 import 'context_menu.dart';
 import 'member_context_menu.dart';
@@ -28,6 +29,18 @@ class _HomeShellState extends ConsumerState<HomeShell> {
   bool _channelsOpen = false;
   bool _membersSheet = false;
   int _shownErrorEpoch = -1;
+  bool _ingestedShare = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _ingestedShare) return;
+      _ingestedShare = true;
+      final s = ref.read(sessionProvider);
+      androidConsumePendingShare(s);
+    });
+  }
 
   @override
   Widget build(BuildContext context) {

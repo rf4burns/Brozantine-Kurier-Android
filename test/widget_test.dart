@@ -8,7 +8,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:kurier_web/app/app.dart';
 import 'package:kurier_web/app/breakpoints.dart';
 import 'package:kurier_web/app/theme.dart';
-import 'package:kurier_web/ui/settings_chrome.dart';
 import 'package:kurier_web/protocol/config.dart';
 import 'package:kurier_web/protocol/models.dart';
 import 'package:kurier_web/protocol/permissions.dart';
@@ -21,6 +20,8 @@ import 'package:kurier_web/ui/home_shell.dart';
 import 'package:kurier_web/ui/member_list.dart';
 import 'package:kurier_web/ui/message_embeds.dart';
 import 'package:kurier_web/ui/gif_favourite_star.dart';
+import 'package:kurier_web/ui/image_fullscreen.dart';
+import 'package:kurier_web/ui/image_lightbox.dart';
 import 'package:kurier_web/ui/panel_resize_handle.dart';
 import 'package:kurier_web/ui/profile_card.dart';
 import 'package:kurier_web/ui/settings_chrome.dart';
@@ -125,9 +126,11 @@ KurierFile _mediaFile({
 void main() {
   setUp(() {
     youtubeOEmbedLookup = (_) async => null;
+    resetImageFullscreen();
   });
   tearDown(() {
     youtubeOEmbedLookup = null;
+    resetImageFullscreen();
   });
   testWidgets('login screen shows connect controls', (tester) async {
     tester.view.physicalSize = const Size(900, 1200);
@@ -1774,6 +1777,161 @@ void main() {
 
     expect(find.text('No favourite GIFs yet'), findsNothing);
     expect(find.byIcon(Icons.star), findsWidgets);
+  });
+
+  testWidgets('uploaded image opens a zoomable lightbox', (tester) async {
+    tester.view.physicalSize = const Size(1280, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(
+      _app(
+        _readySession(
+          selectedChannelId: 10,
+          messages: [
+            KurierMessage(
+              id: 1,
+              channelId: 10,
+              createdAt: 0,
+              content: '<p></p>',
+              userId: 1,
+              files: [
+                _mediaFile(
+                  id: 9,
+                  name: 'photo.png',
+                  originalName: 'photo.png',
+                  mimeType: 'image/png',
+                  extension: 'png',
+                ),
+              ],
+            ),
+            KurierMessage(
+              id: 2,
+              channelId: 10,
+              createdAt: 1,
+              content: '<p>later</p>',
+              userId: 1,
+            ),
+          ],
+        ),
+      ),
+    );
+    await tester.pump();
+
+    final thumb = find.byKey(imageAttachmentKey(9));
+    expect(thumb, findsOneWidget);
+    await tester.tap(thumb);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(find.byKey(kImageLightbox), findsOneWidget);
+    expect(find.byType(InteractiveViewer), findsOneWidget);
+    expect(find.byKey(kFullscreenImage), findsOneWidget);
+    expect(find.byKey(kCloseImageLightbox), findsOneWidget);
+
+    await tester.tap(find.byKey(kFullscreenImage));
+    await tester.pump();
+    expect(find.byKey(kExitFullscreenImage), findsOneWidget);
+    expect(find.byKey(kImageLightbox), findsOneWidget);
+
+    await tester.tap(find.byKey(kExitFullscreenImage));
+    await tester.pump();
+    expect(find.byKey(kFullscreenImage), findsOneWidget);
+    expect(find.byKey(kImageLightbox), findsOneWidget);
+
+    await tester.tap(find.byKey(kCloseImageLightbox));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.byKey(kImageLightbox), findsNothing);
+  });
+
+  testWidgets('gif embed tap opens the image lightbox', (tester) async {
+    tester.view.physicalSize = const Size(1280, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    SharedPreferences.setMockInitialValues({});
+    const gifUrl = 'https://media.tenor.com/abc/tenor.gif';
+    final s = _readySession(
+      selectedChannelId: 10,
+      messages: [
+        KurierMessage(
+          id: 1,
+          channelId: 10,
+          createdAt: 0,
+          content: '<p>$gifUrl</p>',
+          userId: 1,
+        ),
+      ],
+    );
+    await s.store.load();
+
+    await tester.pumpWidget(_app(s));
+    await tester.pump();
+    await tester.pump();
+
+    final gif = find.byKey(gifEmbedKey(gifUrl));
+    expect(gif, findsOneWidget);
+    final gifBox = tester.getRect(gif);
+    await tester.tapAt(Offset(gifBox.left + 24, gifBox.top + 24));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(find.byKey(kImageLightbox), findsOneWidget);
+    expect(find.byType(InteractiveViewer), findsOneWidget);
+  });
+
+  testWidgets('image lightbox backdrop dismisses the popout', (tester) async {
+    tester.view.physicalSize = const Size(1280, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(
+      _app(
+        _readySession(
+          selectedChannelId: 10,
+          messages: [
+            KurierMessage(
+              id: 1,
+              channelId: 10,
+              createdAt: 0,
+              content: '<p></p>',
+              userId: 1,
+              files: [
+                _mediaFile(
+                  id: 9,
+                  name: 'photo.png',
+                  originalName: 'photo.png',
+                  mimeType: 'image/png',
+                  extension: 'png',
+                ),
+              ],
+            ),
+            KurierMessage(
+              id: 2,
+              channelId: 10,
+              createdAt: 1,
+              content: '<p>later</p>',
+              userId: 1,
+            ),
+          ],
+        ),
+      ),
+    );
+    await tester.pump();
+
+    await tester.tap(find.byKey(imageAttachmentKey(9)));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.byKey(kImageLightbox), findsOneWidget);
+
+    await tester.tapAt(const Offset(12, 80));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.byKey(kImageLightbox), findsNothing);
   });
 
   testWidgets('uploaded mp4 embeds as a playable video', (tester) async {
