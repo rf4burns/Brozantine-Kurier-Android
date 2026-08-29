@@ -41,7 +41,7 @@ class KurierForegroundService : Service() {
                 return START_STICKY
             }
             ACTION_DISCONNECT -> {
-                dispatchAction("leave")
+                dispatchAction("disconnect")
                 return START_STICKY
             }
         }
@@ -96,7 +96,7 @@ class KurierForegroundService : Service() {
             .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
             .addAction(notifAction("Mute", ACTION_MUTE, 1))
             .addAction(notifAction("Deafen", ACTION_DEAFEN, 2))
-            .addAction(notifAction("Disconnect", ACTION_LEAVE, 3))
+            .addAction(notifAction("Disconnect", ACTION_DISCONNECT, 4))
         return builder.build()
     }
 
@@ -121,14 +121,14 @@ class KurierForegroundService : Service() {
         action: String,
         requestCode: Int,
     ): NotificationCompat.Action {
-        return NotificationCompat.Action.Builder(0, label, serviceAction(action, requestCode))
+        return NotificationCompat.Action.Builder(0, label, broadcastAction(action, requestCode))
             .setShowsUserInterface(false)
             .build()
     }
 
-    private fun serviceAction(action: String, requestCode: Int): PendingIntent {
-        val intent = Intent(this, KurierForegroundService::class.java).setAction(action)
-        return PendingIntent.getService(
+    private fun broadcastAction(action: String, requestCode: Int): PendingIntent {
+        val intent = Intent(this, KurierNotificationActionReceiver::class.java).setAction(action)
+        return PendingIntent.getBroadcast(
             this,
             requestCode,
             intent,

@@ -3,8 +3,11 @@ import 'dart:async';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 
+import '../app/app_version.dart';
 import '../app/l10n.dart';
+import '../app/release_notes.dart';
 import '../app/theme.dart';
 import '../app/app_platform.dart';
 import '../native/android_runtime.dart';
@@ -1344,9 +1347,138 @@ class _CurrentBrowserTokenState extends State<CurrentBrowserToken> {
   }
 }
 
-class AboutSettingsTab extends StatelessWidget {
+class AboutSettingsTab extends StatefulWidget {
   const AboutSettingsTab({super.key, required this.s});
   final SessionController s;
+
+  @override
+  State<AboutSettingsTab> createState() => _AboutSettingsTabState();
+}
+
+class _AboutSettingsTabState extends State<AboutSettingsTab> {
+  late final Future<String> _version = _loadVersion();
+
+  Future<String> _loadVersion() async {
+    try {
+      final info = await PackageInfo.fromPlatform();
+      return displayAppVersion(
+        packageVersion: info.version,
+        stamp: AppConfig.webStamp,
+      );
+    } catch (_) {
+      return displayAppVersion(stamp: AppConfig.webStamp);
+    }
+  }
+
+  void _openListDialog(
+    BuildContext context, {
+    required String title,
+    required List<Widget> children,
+  }) {
+    final l = L10n.of(context);
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(title),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.sizeOf(ctx).height * 0.6,
+            ),
+            child: children.isEmpty
+                ? Text(l('noChangelog'))
+                : ListView(shrinkWrap: true, children: children),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: Text(l('close')),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _openChangelog(BuildContext context) {
+    final l = L10n.of(context);
+    final p = context.p;
+    if (releaseNotes.isEmpty) {
+      _openListDialog(
+        context,
+        title: l('changelog'),
+        children: [Text(l('noChangelog'))],
+      );
+      return;
+    }
+    final children = <Widget>[];
+    for (var i = 0; i < releaseNotes.length; i++) {
+      final entry = releaseNotes[i];
+      if (i > 0) children.add(const SizedBox(height: 16));
+      children.add(
+        Text(
+          entry.version,
+          style: TextStyle(
+            color: p.foreground,
+            fontSize: 16,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+      );
+      if (entry.notes.isEmpty) {
+        children.add(
+          Padding(
+            padding: const EdgeInsets.only(top: 6),
+            child: Text(l('noChangelog'), style: TextStyle(color: p.muted)),
+          ),
+        );
+        continue;
+      }
+      for (final note in entry.notes) {
+        children.add(
+          Padding(
+            padding: const EdgeInsets.only(top: 6),
+            child: Text(
+              '• $note',
+              style: TextStyle(color: p.muted, height: 1.4),
+            ),
+          ),
+        );
+      }
+    }
+    _openListDialog(context, title: l('changelog'), children: children);
+  }
+
+  void _openThirdParty(BuildContext context) {
+    final l = L10n.of(context);
+    final p = context.p;
+    final children = <Widget>[];
+    for (var i = 0; i < thirdPartyPrograms.length; i++) {
+      final item = thirdPartyPrograms[i];
+      if (i > 0) children.add(const SizedBox(height: 14));
+      children.add(
+        Text(
+          item.name,
+          style: TextStyle(
+            color: p.foreground,
+            fontSize: 15,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+      );
+      children.add(
+        Padding(
+          padding: const EdgeInsets.only(top: 4),
+          child: Text(
+            item.usage,
+            style: TextStyle(color: p.muted, height: 1.4),
+          ),
+        ),
+      );
+    }
+    _openListDialog(context, title: l('thirdPartyUsage'), children: children);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1355,13 +1487,36 @@ class AboutSettingsTab extends StatelessWidget {
       title: l('about'),
       description: l('pluginWidgetsNote'),
       children: [
-        Text(
-          '${l('version')}: ${AppConfig.versionLabel}',
-          style: TextStyle(color: context.p.foreground),
+        FutureBuilder<String>(
+          future: _version,
+          builder: (context, snap) {
+            final version =
+                snap.data ?? displayAppVersion(stamp: AppConfig.webStamp);
+            return Text(
+              '${l('version')}: $version',
+              style: TextStyle(color: context.p.foreground),
+            );
+          },
+        ),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            KurierButton(
+              label: l('changelog'),
+              outline: true,
+              onPressed: () => _openChangelog(context),
+            ),
+            KurierButton(
+              label: l('thirdPartyUsage'),
+              outline: true,
+              onPressed: () => _openThirdParty(context),
+            ),
+          ],
         ),
         Text(l('twemojiCredit'), style: TextStyle(color: context.p.muted)),
         Text(l('logs'), style: TextStyle(color: context.p.faint)),
-        for (final line in s.logs.reversed.take(30))
+        for (final line in widget.s.logs.reversed.take(30))
           Text(line, style: TextStyle(color: context.p.muted, fontSize: 11)),
       ],
     );

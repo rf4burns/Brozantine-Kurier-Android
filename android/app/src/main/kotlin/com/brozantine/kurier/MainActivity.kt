@@ -10,6 +10,8 @@ import android.content.Intent
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
 import android.util.Rational
 import androidx.core.app.NotificationCompat
@@ -29,7 +31,9 @@ class MainActivity : FlutterFragmentActivity() {
         val channel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, nativeChannel)
         nativeMethodChannel = channel
         KurierForegroundService.actionListener = { action ->
-            runOnUiThread { channel.invokeMethod("voiceAction", action) }
+            Handler(Looper.getMainLooper()).post {
+                channel.invokeMethod("voiceAction", action)
+            }
         }
         channel.setMethodCallHandler { call, result ->
                 when (call.method) {

@@ -1144,6 +1144,14 @@ void main() {
       expect(s.phase, SessionPhase.login);
     });
 
+    test('notification leave action stays connected to the server', () async {
+      final s = SessionController();
+      s.phase = SessionPhase.ready;
+      s.handleNotificationAction('leave');
+      await Future<void>.delayed(Duration.zero);
+      expect(s.phase, SessionPhase.ready);
+    });
+
     test('maps speaking meter keys to user ids', () {
       expect(speakingUserIdFromKey('local', 7), 7);
       expect(speakingUserIdFromKey('12:audio', 7), 12);

@@ -1,7 +1,7 @@
 name: kurier_web
 description: Kurier Android and web client
 publish_to: "none"
-version: 1.0.3+4
+version: 1.0.1+2
 
 environment:
   sdk: ^3.12.2
@@ -28,6 +28,7 @@ dependencies:
   just_audio: ^0.10.4
   local_auth: ^2.3.0
   mediasfu_mediasoup_client: ^0.1.4
+  package_info_plus: ^9.0.1
   path_provider: ^2.1.5
   permission_handler: ^12.0.1
   receive_sharing_intent: ^1.8.1

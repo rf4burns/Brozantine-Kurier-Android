@@ -54,10 +54,9 @@ class AppConfig {
   static const deletedUserName = '__deleted_user__';
 
   static String get versionLabel {
-    if (isNativeMobile) {
-      return webStamp == 'dev' ? 'ANDROID (dev)' : 'ANDROID v$webStamp';
-    }
-    return webStamp == 'dev' ? 'WEB (dev)' : 'WEB v$webStamp';
+    final stamp = webStamp == 'dev' || webStamp.isEmpty ? '1.0.0' : webStamp;
+    if (isNativeMobile) return 'ANDROID v$stamp';
+    return 'WEB v$stamp';
   }
 
   static List<Map<String, String>> iceServers() {

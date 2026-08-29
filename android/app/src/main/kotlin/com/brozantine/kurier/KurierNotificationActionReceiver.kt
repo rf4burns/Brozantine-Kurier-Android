@@ -9,7 +9,16 @@ import android.os.Looper
 
 class KurierNotificationActionReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        if (intent.action != ACTION_MARK_READ) return
+        when (intent.action) {
+            KurierForegroundService.ACTION_MUTE -> dispatchVoiceAction(context, "mute")
+            KurierForegroundService.ACTION_DEAFEN -> dispatchVoiceAction(context, "deafen")
+            KurierForegroundService.ACTION_LEAVE -> dispatchVoiceAction(context, "leave")
+            KurierForegroundService.ACTION_DISCONNECT -> dispatchVoiceAction(context, "disconnect")
+            ACTION_MARK_READ -> handleMarkRead(context, intent)
+        }
+    }
+
+    private fun handleMarkRead(context: Context, intent: Intent) {
         val kind = intent.getStringExtra(EXTRA_KIND) ?: return
         val channelIds = intent.getIntArrayExtra(EXTRA_CHANNELS) ?: intArrayOf()
         context.getSystemService(NotificationManager::class.java)
@@ -20,6 +29,22 @@ class KurierNotificationActionReceiver : BroadcastReceiver() {
         )
         Handler(Looper.getMainLooper()).post {
             MainActivity.nativeMethodChannel?.invokeMethod("markRead", payload)
+        }
+    }
+
+    private fun dispatchVoiceAction(context: Context, action: String) {
+        Handler(Looper.getMainLooper()).post {
+            val listener = KurierForegroundService.actionListener
+            if (listener != null) {
+                listener.invoke(action)
+                return@post
+            }
+            val channel = MainActivity.nativeMethodChannel
+            if (channel != null) {
+                channel.invokeMethod("voiceAction", action)
+            } else if (action == "leave" || action == "disconnect") {
+                KurierForegroundService.stop(context.applicationContext)
+            }
         }
     }
 

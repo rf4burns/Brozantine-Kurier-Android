@@ -119,7 +119,7 @@ Or:
 flutter pub get
 flutter build web --release --base-href / --no-wasm-dry-run \
   --dart-define=WEBRTC_USE_HTML_ELEMENT_VIEW=true \
-  --dart-define=KURIER_WEB_STAMP=1.0.3
+  --dart-define=KURIER_WEB_STAMP=1.0.0
 ```
 
 The script writes `build/web/` and a `web_releases.json` stamp. Copy that folder onto the Caddy site root (for Brozantine: `/var/www/brozantine`) and reload Caddy:
@@ -150,7 +150,7 @@ Compile-time `--dart-define` values (empty TURN defines mean host ICE only):
 
 | Define | Purpose | Default |
 | --- | --- | --- |
-| `KURIER_WEB_STAMP` | Version shown in Settings → About (`WEB vX.Y.Z`) | `dev` |
+| `KURIER_WEB_STAMP` | Fallback version stamp if package info is missing | `dev` (About then shows `1.0.0`) |
 | `KURIER_TURN_HOST` | TURN host for cellular WebRTC | empty |
 | `KURIER_TURN_USER` | TURN username | empty |
 | `KURIER_TURN_PASS` | TURN password | empty |
