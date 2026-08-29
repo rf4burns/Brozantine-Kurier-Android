@@ -5,9 +5,11 @@ import 'package:flutter/material.dart';
 import '../app/breakpoints.dart';
 import '../app/l10n.dart';
 import '../app/theme.dart';
+import '../protocol/audio_output.dart';
 import '../protocol/models.dart';
 import '../protocol/permissions.dart';
 import '../protocol/platform.dart';
+import '../protocol/voice_protocol.dart';
 import '../session/session_controller.dart';
 import 'context_menu.dart';
 import 'media_stream_view_stub.dart'
@@ -161,6 +163,8 @@ class _VoiceStageState extends State<VoiceStage> {
             ),
           ),
           Expanded(child: _occupantArea(context, s, phone, focusedCard)),
+          if (connected && s.voiceAudioLocked)
+            _TapToEnableAudioBanner(session: s),
           _controls(context, s, l, connected, phone: phone),
         ],
       ),
@@ -609,6 +613,84 @@ class _VoiceStageState extends State<VoiceStage> {
     return () => s.toggleScreen();
   }
 
+  Future<void> _showPhoneVoiceMore(
+    BuildContext context,
+    SessionController s,
+    L10n l,
+  ) async {
+    await showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: context.p.sidebar,
+      builder: (ctx) {
+        Widget row({
+          required Key key,
+          required IconData icon,
+          required String label,
+          required VoidCallback onTap,
+          Color? iconColor,
+          bool active = false,
+        }) {
+          return ListTile(
+            key: key,
+            leading: Icon(icon, color: iconColor ?? ctx.p.foreground),
+            title: Text(label, style: TextStyle(color: ctx.p.foreground)),
+            trailing: active ? Icon(Icons.check, color: ctx.k.accent) : null,
+            onTap: () {
+              Navigator.pop(ctx);
+              onTap();
+            },
+          );
+        }
+
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    l('more'),
+                    style: TextStyle(
+                      color: ctx.p.foreground,
+                      fontSize: 16,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ),
+              row(
+                key: const ValueKey('voice-ctrl-cam'),
+                icon: s.webcam ? Icons.videocam : Icons.videocam_off,
+                label: s.webcam ? l('cameraOff') : l('cameraOn'),
+                active: s.webcam,
+                onTap: s.toggleWebcam,
+              ),
+              row(
+                key: const ValueKey('voice-ctrl-share'),
+                icon: s.sharing ? Icons.stop_screen_share : Icons.screen_share,
+                label: s.sharing ? l('stopShare') : l('shareScreen'),
+                active: s.sharing,
+                onTap: _screenSharePressed(context, s, l),
+              ),
+              row(
+                key: const ValueKey('voice-ctrl-keep-awake'),
+                icon: Icons.stay_current_portrait,
+                iconColor: s.store.keepScreenOnVoice
+                    ? ctx.k.accent
+                    : ctx.p.foreground,
+                label: l('keepScreenOnVoice'),
+                active: s.store.keepScreenOnVoice,
+                onTap: () => toggleKeepScreenOnVoice(context, s),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
   Widget _controls(
     BuildContext context,
     SessionController s,
@@ -681,6 +763,17 @@ class _VoiceStageState extends State<VoiceStage> {
                 color: context.p.foreground,
               ),
               onPressed: _screenSharePressed(context, s, l),
+            ),
+            IconButton(
+              key: const ValueKey('voice-ctrl-keep-awake'),
+              icon: Icon(
+                Icons.stay_current_portrait,
+                color: s.store.keepScreenOnVoice
+                    ? context.k.accent
+                    : context.p.foreground,
+              ),
+              tooltip: l('keepScreenOnVoice'),
+              onPressed: () => toggleKeepScreenOnVoice(context, s),
             ),
             CompactIconButton(
               icon: Icons.call_end,
@@ -770,18 +863,15 @@ class _VoiceStageState extends State<VoiceStage> {
                 iconColor: s.soundMuted ? context.p.dnd : context.p.foreground,
                 onPressed: () => s.setSoundMuted(!s.soundMuted),
               ),
+              _VoiceOutputControl(session: s),
               _VoiceRoundButton(
-                key: const ValueKey('voice-ctrl-cam'),
-                icon: s.webcam ? Icons.videocam : Icons.videocam_off,
-                onPressed: s.toggleWebcam,
-                tooltip: s.canEnableWebcam() || s.webcam
-                    ? null
-                    : l('missingPermission'),
-              ),
-              _VoiceRoundButton(
-                key: const ValueKey('voice-ctrl-share'),
-                icon: s.sharing ? Icons.stop_screen_share : Icons.screen_share,
-                onPressed: _screenSharePressed(context, s, l),
+                key: const ValueKey('voice-ctrl-more'),
+                icon: Icons.more_horiz,
+                iconColor: s.webcam || s.sharing || s.store.keepScreenOnVoice
+                    ? context.k.accent
+                    : context.p.foreground,
+                tooltip: l('more'),
+                onPressed: () => _showPhoneVoiceMore(context, s, l),
               ),
               _VoiceRoundButton(
                 key: const ValueKey('voice-ctrl-leave'),
@@ -807,11 +897,198 @@ class _VoiceStageState extends State<VoiceStage> {
   }
 }
 
+class _VoiceOutputControl extends StatefulWidget {
+  const _VoiceOutputControl({required this.session, this.compact = false});
+
+  final SessionController session;
+  final bool compact;
+
+  @override
+  State<_VoiceOutputControl> createState() => _VoiceOutputControlState();
+}
+
+class _VoiceOutputControlState extends State<_VoiceOutputControl> {
+  ClassifiedAudioOutputs _classified = const ClassifiedAudioOutputs();
+
+  SessionController get session => widget.session;
+
+  @override
+  void initState() {
+    super.initState();
+    _refreshDevices();
+  }
+
+  Future<ClassifiedAudioOutputs> _refreshDevices() async {
+    final list = await PlatformBridge.enumerate();
+    final classified = classifyAudioOutputs(list);
+    final current = session.speakerOutputId;
+    if (current != null &&
+        classified.externals.any((d) => d.deviceId == current)) {
+      session.lastExternalOutputId = current;
+    }
+    if (mounted) setState(() => _classified = classified);
+    return classified;
+  }
+
+  AudioOutputRoute get _route =>
+      audioOutputRoute(session.speakerOutputId, _classified);
+
+  IconData get _icon {
+    switch (_route) {
+      case AudioOutputRoute.speaker:
+        return Icons.speaker_phone;
+      case AudioOutputRoute.bluetooth:
+        return Icons.bluetooth_audio;
+      case AudioOutputRoute.unknown:
+        return Icons.volume_up;
+    }
+  }
+
+  void _snack(BuildContext context, String key) {
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(L10n.of(context)(key))));
+  }
+
+  Future<void> _apply(String? id, ClassifiedAudioOutputs classified) async {
+    if (id != null && classified.externals.any((d) => d.deviceId == id)) {
+      session.lastExternalOutputId = id;
+    }
+    await session.applySpeakerDevice(id);
+  }
+
+  Future<void> _onTap() async {
+    if (!mounted) return;
+    if (PlatformBridge.isIos || !PlatformBridge.canSetOutputDevice) {
+      _snack(context, 'audioOutputIos');
+      return;
+    }
+    final classified = await _refreshDevices();
+    if (!mounted) return;
+    final result = nextAudioOutput(
+      currentId: session.speakerOutputId,
+      classified: classified,
+      lastExternalId: session.lastExternalOutputId,
+    );
+    switch (result.kind) {
+      case AudioOutputToggle.toDevice:
+        await _apply(result.deviceId, classified);
+      case AudioOutputToggle.noOtherDevices:
+        _snack(context, 'noOtherAudioDevices');
+      case AudioOutputToggle.pickDevice:
+        await _showPicker(classified);
+    }
+  }
+
+  Future<void> _onLongPress() async {
+    if (!mounted) return;
+    if (PlatformBridge.isIos || !PlatformBridge.canSetOutputDevice) {
+      _snack(context, 'audioOutputIos');
+      return;
+    }
+    final classified = await _refreshDevices();
+    if (!mounted) return;
+    await _showPicker(classified);
+  }
+
+  Future<void> _showPicker(ClassifiedAudioOutputs classified) async {
+    final devices = classified.realDevices;
+    if (devices.isEmpty) {
+      _snack(context, 'noOtherAudioDevices');
+      return;
+    }
+    final l = L10n.of(context);
+    final current = session.speakerOutputId ?? '';
+    await showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: context.p.sidebar,
+      builder: (ctx) {
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+                child: Text(
+                  l('switchAudioOutput'),
+                  style: TextStyle(
+                    color: ctx.p.foreground,
+                    fontSize: 16,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+              for (final d in devices)
+                ListTile(
+                  leading: Icon(
+                    isSpeakerOutputLabel(d.label)
+                        ? Icons.speaker_phone
+                        : Icons.bluetooth_audio,
+                    color: d.deviceId == current
+                        ? ctx.k.accent
+                        : ctx.p.foreground,
+                  ),
+                  title: Text(
+                    d.label.isEmpty ? d.deviceId : d.label,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(color: ctx.p.foreground),
+                  ),
+                  trailing: d.deviceId == current
+                      ? Icon(Icons.check, color: ctx.k.accent)
+                      : null,
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _apply(d.deviceId, classified);
+                  },
+                ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  String _tooltip(L10n l) {
+    switch (_route) {
+      case AudioOutputRoute.speaker:
+        return l('speakerPhone');
+      case AudioOutputRoute.bluetooth:
+        return l('bluetoothAudio');
+      case AudioOutputRoute.unknown:
+        return l('switchAudioOutput');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final l = L10n.of(context);
+    if (widget.compact) {
+      return GestureDetector(
+        onLongPress: _onLongPress,
+        child: CompactIconButton(
+          key: const ValueKey('compact-voice-output'),
+          tooltip: _tooltip(l),
+          icon: _icon,
+          onPressed: _onTap,
+        ),
+      );
+    }
+    return _VoiceRoundButton(
+      key: const ValueKey('voice-ctrl-output'),
+      icon: _icon,
+      tooltip: _tooltip(l),
+      onPressed: _onTap,
+      onLongPress: _onLongPress,
+    );
+  }
+}
+
 class _VoiceRoundButton extends StatelessWidget {
   const _VoiceRoundButton({
     super.key,
     required this.icon,
     required this.onPressed,
+    this.onLongPress,
     this.tooltip,
     this.iconColor,
     this.background,
@@ -819,6 +1096,7 @@ class _VoiceRoundButton extends StatelessWidget {
 
   final IconData icon;
   final VoidCallback? onPressed;
+  final VoidCallback? onLongPress;
   final String? tooltip;
   final Color? iconColor;
   final Color? background;
@@ -832,6 +1110,7 @@ class _VoiceRoundButton extends StatelessWidget {
       child: InkWell(
         customBorder: const CircleBorder(),
         onTap: onPressed,
+        onLongPress: onLongPress,
         child: SizedBox(
           width: kVoiceCtrlBtn,
           height: kVoiceCtrlBtn,
@@ -979,6 +1258,8 @@ class VoiceControlBar extends StatelessWidget {
     final showShare = !PlatformBridge.isIos && PlatformBridge.canShareScreen;
     final voiceErrorText = s.voiceError == missingPermissionKey
         ? l('missingPermission')
+        : s.voiceError == micUnavailableKey
+        ? l('micUnavailable')
         : s.voiceError;
     return Container(
       decoration: BoxDecoration(
@@ -1157,77 +1438,130 @@ class CompactVoiceBar extends StatelessWidget {
     final s = session;
     final l = L10n.of(context);
     final ch = s.channels[s.connectedVoiceChannelId];
-    return Material(
-      color: const Color(0xFF23A55A).withValues(alpha: 0.18),
-      child: SizedBox(
-        height: 40,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 8),
-          child: Row(
-            children: [
-              const Icon(Icons.volume_up, color: Color(0xFF23A55A), size: 18),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Tooltip(
-                  message: l('returnToVoice'),
-                  child: GestureDetector(
-                    key: const ValueKey('return-to-voice'),
-                    behavior: HitTestBehavior.opaque,
-                    onTap: s.returnToVoiceChannel,
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (s.voiceAudioLocked) _TapToEnableAudioBanner(session: s),
+        Material(
+          color: const Color(0xFF23A55A).withValues(alpha: 0.18),
+          child: SizedBox(
+            height: 40,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              child: Row(
+                children: [
+                  const Icon(
+                    Icons.volume_up,
+                    color: Color(0xFF23A55A),
+                    size: 18,
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Tooltip(
+                      message: l('returnToVoice'),
+                      child: GestureDetector(
+                        key: const ValueKey('return-to-voice'),
+                        behavior: HitTestBehavior.opaque,
+                        onTap: s.returnToVoiceChannel,
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Flexible(
-                              child: Text(
-                                l('voiceConnected'),
-                                overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(
-                                  color: Color(0xFF23A55A),
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.w600,
+                            Row(
+                              children: [
+                                Flexible(
+                                  child: Text(
+                                    l('voiceConnected'),
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      color: Color(0xFF23A55A),
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
                                 ),
+                                if (s.voiceRttMs != null) ...[
+                                  const SizedBox(width: 6),
+                                  Text(
+                                    l('pingMs', {'ms': '${s.voiceRttMs}'}),
+                                    style: TextStyle(
+                                      color: voicePingColor(s.voiceRttMs!),
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ],
+                              ],
+                            ),
+                            Text(
+                              ch?.name ?? '',
+                              style: TextStyle(
+                                color: context.p.muted,
+                                fontSize: 11,
                               ),
                             ),
-                            if (s.voiceRttMs != null) ...[
-                              const SizedBox(width: 6),
-                              Text(
-                                l('pingMs', {'ms': '${s.voiceRttMs}'}),
-                                style: TextStyle(
-                                  color: voicePingColor(s.voiceRttMs!),
-                                  fontSize: 11,
-                                  fontWeight: FontWeight.w600,
-                                ),
-                              ),
-                            ],
                           ],
                         ),
-                        Text(
-                          ch?.name ?? '',
-                          style: TextStyle(
-                            color: context.p.muted,
-                            fontSize: 11,
-                          ),
-                        ),
-                      ],
+                      ),
                     ),
                   ),
+                  _VoiceOutputControl(session: s, compact: true),
+                  CompactIconButton(
+                    key: const ValueKey('compact-voice-keep-awake'),
+                    tooltip: l('keepScreenOnVoice'),
+                    icon: Icons.stay_current_portrait,
+                    color: s.store.keepScreenOnVoice ? context.k.accent : null,
+                    onPressed: () => toggleKeepScreenOnVoice(context, s),
+                  ),
+                  CompactIconButton(
+                    key: const ValueKey('compact-voice-stats'),
+                    tooltip: l('transportStats'),
+                    icon: Icons.info_outline,
+                    onPressed: () =>
+                        showTransportStatsPopover(context: context, session: s),
+                  ),
+                  CompactIconButton(
+                    tooltip: l('disconnectVoice'),
+                    icon: Icons.call_end,
+                    color: Colors.redAccent,
+                    onPressed: s.leaveVoice,
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _TapToEnableAudioBanner extends StatelessWidget {
+  const _TapToEnableAudioBanner({required this.session});
+  final SessionController session;
+
+  @override
+  Widget build(BuildContext context) {
+    final l = L10n.of(context);
+    return Material(
+      color: const Color(0xFFF0B232),
+      child: InkWell(
+        onTap: session.enableVoiceAudio,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          child: Row(
+            children: [
+              const Icon(Icons.volume_up, color: Color(0xFF1E1F22), size: 18),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  l('tapToEnableAudio'),
+                  style: const TextStyle(
+                    color: Color(0xFF1E1F22),
+                    fontWeight: FontWeight.w600,
+                    fontSize: 13,
+                  ),
                 ),
-              ),
-              CompactIconButton(
-                key: const ValueKey('compact-voice-stats'),
-                tooltip: l('transportStats'),
-                icon: Icons.info_outline,
-                onPressed: () =>
-                    showTransportStatsPopover(context: context, session: s),
-              ),
-              CompactIconButton(
-                tooltip: l('disconnectVoice'),
-                icon: Icons.call_end,
-                color: Colors.redAccent,
-                onPressed: s.leaveVoice,
               ),
             ],
           ),

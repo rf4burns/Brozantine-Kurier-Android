@@ -1614,15 +1614,23 @@ void main() {
       tester.getSize(find.byKey(const ValueKey('voice-ctrl-deafen'))),
       ctrl,
     );
-    expect(tester.getSize(find.byKey(const ValueKey('voice-ctrl-cam'))), ctrl);
     expect(
-      tester.getSize(find.byKey(const ValueKey('voice-ctrl-share'))),
+      tester.getSize(find.byKey(const ValueKey('voice-ctrl-output'))),
       ctrl,
     );
+    expect(tester.getSize(find.byKey(const ValueKey('voice-ctrl-more'))), ctrl);
     expect(
       tester.getSize(find.byKey(const ValueKey('voice-ctrl-leave'))),
       ctrl,
     );
+    expect(find.byKey(const ValueKey('voice-ctrl-cam')), findsNothing);
+    expect(find.byKey(const ValueKey('voice-ctrl-share')), findsNothing);
+
+    await tester.tap(find.byKey(const ValueKey('voice-ctrl-more')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('voice-ctrl-cam')), findsOneWidget);
+    expect(find.byKey(const ValueKey('voice-ctrl-share')), findsOneWidget);
+    expect(find.byKey(const ValueKey('voice-ctrl-keep-awake')), findsOneWidget);
     expect(find.text('Join Voice'), findsNothing);
   });
 
@@ -3440,6 +3448,7 @@ void main() {
 
     expect(find.byType(CompactVoiceBar), findsOneWidget);
     expect(find.byType(VoiceStage), findsNothing);
+    expect(find.byKey(const ValueKey('compact-voice-output')), findsOneWidget);
     expect(find.byKey(const ValueKey('compact-voice-stats')), findsOneWidget);
 
     await tester.tap(find.byKey(const ValueKey('return-to-voice')));
@@ -3779,5 +3788,6 @@ void main() {
   test('web client defaults automatic gain control off', () {
     expect(HostsStore().autoGainControl, isFalse);
     expect(HostsStore().echoCancellation, isTrue);
+    expect(HostsStore().keepScreenOnVoice, isFalse);
   });
 }

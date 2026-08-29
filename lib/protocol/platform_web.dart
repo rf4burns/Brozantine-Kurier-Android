@@ -79,6 +79,9 @@ external void _closeProducer(JSString kind);
 @JS('KurierMediasoup.pauseMic')
 external void _pauseMic(JSBoolean paused);
 
+@JS('KurierMediasoup.setWakeLock')
+external void _setWakeLock(JSBoolean wanted);
+
 @JS('KurierMediasoup.consumerTrackLive')
 external JSBoolean _consumerTrackLive(JSString key);
 
@@ -117,6 +120,9 @@ external JSBoolean _canShare();
 
 @JS('KurierMediasoup.isIos')
 external JSBoolean _isIos();
+
+@JS('KurierMediasoup.canSetOutputDevice')
+external JSBoolean _canSetOutputDevice();
 
 @JS('KurierMediasoup.unlockAudio')
 external JSPromise<JSAny?> _unlock();
@@ -174,6 +180,8 @@ class PlatformBridge {
   static bool get available => _ms != null;
 
   static bool get isIos => available && _isIos().toDart;
+  static bool get canSetOutputDevice =>
+      available && _canSetOutputDevice().toDart;
   static bool get canShareScreen => available && _canShare().toDart;
 
   static Future<void> ensureReady() async {
@@ -282,6 +290,10 @@ class PlatformBridge {
 
   static void closeProducer(String kind) => _closeProducer(kind.toJS);
   static void pauseMic(bool paused) => _pauseMic(paused.toJS);
+  static void setKeepScreenAwake(bool on) {
+    if (available) _setWakeLock(on.toJS);
+  }
+
   static bool consumerTrackLive(String key) =>
       available && _consumerTrackLive(key.toJS).toDart;
   static bool get audioProducerLive => available && _audioProducerLive().toDart;

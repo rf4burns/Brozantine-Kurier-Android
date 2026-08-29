@@ -172,6 +172,8 @@
     _recvConnState: "",
     _resumeTimer: 0,
     _resumingPlayback: false,
+    _wakeLock: null,
+    _wakeLockWanted: false,
 
     async _run(work) {
       try {
@@ -204,15 +206,20 @@
         this._audioCtx.onstatechange = () => {
           const ctx = this._audioCtx;
           if (!ctx) return;
-          if (ctx.state !== "running") {
+          if (ctx.state === "suspended" || ctx.state === "interrupted") {
             ctx.resume().catch(() => {});
             return;
           }
+          if (ctx.state !== "running") return;
           this._reattachVoiceGraphs(true);
           this.resumePlayback();
         };
       }
-      if (this._audioCtx.state !== "running") {
+      if (
+        this._audioCtx.state === "suspended" ||
+        this._audioCtx.state === "interrupted" ||
+        this._audioCtx.state !== "running"
+      ) {
         this._audioCtx.resume().catch(() => {});
       }
       this._applyCtxSink();
@@ -221,8 +228,8 @@
 
     _applyCtxSink() {
       const ctx = this._audioCtx;
-      if (!ctx || typeof ctx.setSinkId !== "function" || !this._outputDevice) return;
-      ctx.setSinkId(this._outputDevice).catch(() => {});
+      if (!ctx || typeof ctx.setSinkId !== "function") return;
+      ctx.setSinkId(this._outputDevice || "").catch(() => {});
     },
 
     _startKeepAlive() {
@@ -267,7 +274,31 @@
       return s.endsWith(":screen_audio") || s.endsWith(":external_audio");
     },
 
+    _usesHtmlAudioPlayback() {
+      return this.isIos();
+    },
+
+    _audioHost(kind) {
+      if (kind === "audio" && this._usesHtmlAudioPlayback()) return document.body;
+      return document.getElementById("kurier-media-host") || document.body;
+    },
+
+    _styleAudioElement(el) {
+      el.setAttribute("playsinline", "true");
+      el.setAttribute("webkit-playsinline", "true");
+      el.playsInline = true;
+      el.autoplay = true;
+      if (this._usesHtmlAudioPlayback()) {
+        el.style.cssText =
+          "position:fixed;left:0;top:0;width:1px;height:1px;opacity:0.01;pointer-events:none;z-index:-1";
+      } else {
+        el.style.cssText =
+          "position:absolute;width:1px;height:1px;opacity:0;pointer-events:none";
+      }
+    },
+
     _attachVoiceGraph(key, stream) {
+      if (this._usesHtmlAudioPlayback()) return false;
       this._detachVoiceGraph(key);
       if (!stream || !stream.getAudioTracks || !stream.getAudioTracks().length) {
         return false;
@@ -724,8 +755,8 @@
     },
 
     _applySink(el) {
-      if (!el || typeof el.setSinkId !== "function" || !this._outputDevice) return;
-      el.setSinkId(this._outputDevice).catch(() => {});
+      if (!el || typeof el.setSinkId !== "function") return;
+      el.setSinkId(this._outputDevice || "").catch(() => {});
     },
 
     _vp8Codec() {
@@ -881,7 +912,9 @@
         this._ensureAudioCtx();
         const reattach = () => {
           if (this.consumers[key] !== consumer) return;
-          this._attachVoiceGraph(key, stream);
+          if (!this._usesHtmlAudioPlayback()) {
+            this._attachVoiceGraph(key, stream);
+          }
           this._ensureAudioCtx();
           this.resumePlayback();
         };
@@ -925,6 +958,7 @@
       el.playsInline = true;
       el.muted = true;
       el.setAttribute("playsinline", "true");
+      el.setAttribute("webkit-playsinline", "true");
       el.setAttribute("muted", "true");
       const apply = () => {
         const bound = this._boundMedia[key];
@@ -947,31 +981,38 @@
 
     _attachStream(key, stream, kind) {
       let el = document.getElementById("kurier-media-" + key);
+      const htmlAudio = kind === "audio" && this._usesHtmlAudioPlayback();
       if (!el) {
         el = document.createElement(kind === "audio" ? "audio" : "video");
         el.id = "kurier-media-" + key;
         el.autoplay = true;
         el.playsInline = true;
         el.setAttribute("playsinline", "true");
+        el.setAttribute("webkit-playsinline", "true");
         if (kind === "audio") {
-          el.style.cssText = "position:absolute;width:1px;height:1px;opacity:0;pointer-events:none";
+          this._styleAudioElement(el);
         } else {
           el.style.cssText =
             "width:100%;height:100%;object-fit:cover;background:#000;border-radius:8px";
         }
-        const host = document.getElementById("kurier-media-host") || document.body;
-        host.appendChild(el);
+        this._audioHost(kind).appendChild(el);
+      } else if (kind === "audio" && htmlAudio && el.parentNode !== document.body) {
+        this._styleAudioElement(el);
+        document.body.appendChild(el);
       }
       el.srcObject = stream;
       if (kind === "audio") {
         this._stopDummyTracks(key);
-        const dummy = stream.getAudioTracks().map((t) => t.clone());
-        this._dummyTracks[key] = dummy;
-        el.srcObject = dummy.length ? new MediaStream(dummy) : stream;
+        if (!htmlAudio) {
+          const dummy = stream.getAudioTracks().map((t) => t.clone());
+          this._dummyTracks[key] = dummy;
+          el.srcObject = dummy.length ? new MediaStream(dummy) : stream;
+        }
       }
       this._applySink(el);
       const playbackStream = this._isPlaybackKey(key);
-      const usedGraph = kind === "audio" ? this._attachVoiceGraph(key, stream) : false;
+      const usedGraph =
+        kind === "audio" && !htmlAudio ? this._attachVoiceGraph(key, stream) : false;
       if (usedGraph) {
         el.muted = false;
         el.volume = 0;
@@ -998,7 +1039,7 @@
       }
       const el = document.getElementById("kurier-media-" + key);
       if (!el) return;
-      if (graph) {
+      if (graph && !this._usesHtmlAudioPlayback()) {
         el.volume = 0;
         el.muted = false;
       } else {
@@ -1032,7 +1073,9 @@
         else p.resume();
       }
       const stream = this.localStreams.mic;
-      if (stream) stream.getAudioTracks().forEach((t) => (t.enabled = !paused));
+      if (stream && !this.isIos()) {
+        stream.getAudioTracks().forEach((t) => (t.enabled = !paused));
+      }
       this._localMeterPaused = !!paused;
       const m = this._meters.local;
       if (!m) return;
@@ -1381,11 +1424,18 @@
         delete this.consumers[key];
       }
       const el = document.getElementById("kurier-media-" + key);
-      const host = document.getElementById("kurier-media-host");
-      if (el && host && host.contains(el)) el.remove();
+      if (el) {
+        try {
+          el.pause();
+        } catch (_) {}
+        el.srcObject = null;
+        el.remove();
+      }
     },
 
     closeAll() {
+      this._wakeLockWanted = false;
+      this._releaseWakeLock();
       this._stopResumeLoop();
       this._stopAllMeters();
       Object.keys(this.producers).forEach((k) => this.closeProducer(k));
@@ -1433,6 +1483,42 @@
       });
     },
 
+    setWakeLock(wanted) {
+      this._wakeLockWanted = !!wanted;
+      if (!wanted) {
+        this._releaseWakeLock();
+        return;
+      }
+      this._acquireWakeLock();
+    },
+
+    async _acquireWakeLock() {
+      if (!this._wakeLockWanted || this._wakeLock) return;
+      const api = navigator.wakeLock;
+      if (!api || typeof api.request !== "function") return;
+      try {
+        const sentinel = await api.request("screen");
+        if (!this._wakeLockWanted) {
+          try {
+            sentinel.release();
+          } catch (_) {}
+          return;
+        }
+        this._wakeLock = sentinel;
+        sentinel.addEventListener("release", () => {
+          if (this._wakeLock === sentinel) this._wakeLock = null;
+        });
+      } catch (_) {}
+    },
+
+    _releaseWakeLock() {
+      const lock = this._wakeLock;
+      this._wakeLock = null;
+      try {
+        if (lock) lock.release();
+      } catch (_) {}
+    },
+
     canShareScreen() {
       return !!(navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia);
     },
@@ -1444,12 +1530,44 @@
       );
     },
 
-    async unlockAudio() {
-      return this._run(async () => {
+    canSetOutputDevice() {
+      try {
+        const Ctx = window.AudioContext || window.webkitAudioContext;
+        const ctxProto = Ctx && Ctx.prototype;
+        const mediaProto = window.HTMLMediaElement && HTMLMediaElement.prototype;
+        return !!(
+          (ctxProto && typeof ctxProto.setSinkId === "function") ||
+          (mediaProto && typeof mediaProto.setSinkId === "function")
+        );
+      } catch (_) {
+        return false;
+      }
+    },
+
+    _thawFromGesture() {
       try {
         const ctx = this._ensureAudioCtx();
-        if (ctx.state !== "running") await ctx.resume();
-        this._startKeepAlive();
+        if (ctx && ctx.state !== "running") ctx.resume().catch(() => {});
+      } catch (_) {}
+      if (this.sendTransport || this.recvTransport) {
+        try {
+          this._startKeepAlive();
+        } catch (_) {}
+      }
+      if (global.KurierSounds && global.KurierSounds.unlock) {
+        try {
+          global.KurierSounds.unlock();
+        } catch (_) {}
+      }
+      this.resumePlayback();
+    },
+
+    async unlockAudio() {
+      return this._run(async () => {
+      this._thawFromGesture();
+      try {
+        const ctx = this._audioCtx;
+        if (ctx && ctx.state !== "running") await ctx.resume();
       } catch (_) {}
       if (global.KurierSounds && global.KurierSounds.unlock) {
         try {
@@ -1494,6 +1612,7 @@
     },
 
     _reattachVoiceGraphs(force) {
+      if (this._usesHtmlAudioPlayback()) return;
       Object.keys(this.consumers).forEach((key) => {
         const c = this.consumers[key];
         if (!c || !c.track || c.track.kind !== "audio") return;
@@ -1519,14 +1638,21 @@
       this._resumeTimer = 0;
     },
 
+    _elementPlaying(el) {
+      return !!(el && el.srcObject && !el.paused && !el.ended && el.readyState > 0);
+    },
+
     _playbackSnapshot() {
       const liveAudioKeys = [];
       const graphKeys = [];
+      const playingKeys = [];
       Object.keys(this.consumers).forEach((key) => {
         const c = this.consumers[key];
         if (!c || !c.track || c.track.kind !== "audio") return;
         if (c.track.readyState === "live") liveAudioKeys.push(key);
         if (this._gains[key]) graphKeys.push(key);
+        const el = document.getElementById("kurier-media-" + key);
+        if (this._elementPlaying(el)) playingKeys.push(key);
       });
       return {
         ctxRunning: !!(this._audioCtx && this._audioCtx.state === "running"),
@@ -1535,6 +1661,7 @@
         sendState: this._sendConnState || "",
         liveAudioKeys: liveAudioKeys,
         graphKeys: graphKeys,
+        playingKeys: playingKeys,
       };
     },
 
@@ -1563,9 +1690,18 @@
 
   global.KurierMediasoup = KurierMediasoup;
 
+  ["touchstart", "pointerdown", "click"].forEach((type) => {
+    document.addEventListener(
+      type,
+      () => KurierMediasoup._thawFromGesture(),
+      { capture: true, passive: true }
+    );
+  });
+
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") {
       KurierMediasoup.resumePlayback();
+      KurierMediasoup._acquireWakeLock();
       KurierMediasoup._emit("visibility", "visible");
       if (global.KurierSounds && global.KurierSounds.unlock) {
         global.KurierSounds.unlock();

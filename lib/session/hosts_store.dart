@@ -36,6 +36,7 @@ class HostsStore {
   static const _attenuateKey = 'kurier.attenuateOthers';
   static const _attenuationAmtKey = 'kurier.attenuationAmount';
   static const _skipDeviceCheckKey = 'kurier.skipDeviceCheck';
+  static const _keepScreenOnVoiceKey = 'kurier.keepScreenOnVoice';
   static const _notifyRepliesKey = 'kurier.notifyReplies';
   static const _collapsedKey = 'kurier.collapsedCats';
   static const _recentEmojisKey = 'recent_emoji_keys_v1';
@@ -118,6 +119,7 @@ class HostsStore {
   bool get vadSensitivity => _p?.getBool(_vadKey) ?? true;
   bool get attenuateOthers => _p?.getBool(_attenuateKey) ?? false;
   bool get skipDeviceCheck => _p?.getBool(_skipDeviceCheckKey) ?? true;
+  bool get keepScreenOnVoice => _p?.getBool(_keepScreenOnVoiceKey) ?? false;
   String get noiseSuppression => _p?.getString(_noiseKey) ?? 'none';
   double get attenuationAmount {
     final v = _p?.getDouble(_attenuationAmtKey);
@@ -140,6 +142,8 @@ class HostsStore {
   Future<void> setVadSensitivity(bool v) => setBool(_vadKey, v);
   Future<void> setAttenuateOthers(bool v) => setBool(_attenuateKey, v);
   Future<void> setSkipDeviceCheck(bool v) => setBool(_skipDeviceCheckKey, v);
+  Future<void> setKeepScreenOnVoice(bool v) =>
+      setBool(_keepScreenOnVoiceKey, v);
   Future<void> setNoiseSuppression(String v) => _p!.setString(_noiseKey, v);
   Future<void> setAttenuationAmount(double v) =>
       _p!.setDouble(_attenuationAmtKey, v.clamp(0, 100));

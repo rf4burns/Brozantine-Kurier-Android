@@ -132,6 +132,7 @@ class VoicePlaybackHealth {
     this.sendState = '',
     this.liveAudioKeys = const [],
     this.graphKeys = const [],
+    this.playingKeys = const [],
   });
 
   final bool ctxRunning;
@@ -140,6 +141,7 @@ class VoicePlaybackHealth {
   final String sendState;
   final List<String> liveAudioKeys;
   final List<String> graphKeys;
+  final List<String> playingKeys;
 
   static const dead = VoicePlaybackHealth();
 
@@ -156,6 +158,7 @@ class VoicePlaybackHealth {
       sendState: '${json['sendState'] ?? ''}',
       liveAudioKeys: keys(json['liveAudioKeys']),
       graphKeys: keys(json['graphKeys']),
+      playingKeys: keys(json['playingKeys']),
     );
   }
 }
@@ -200,20 +203,49 @@ bool shouldReceiveVoiceAudio({
   required bool hasUnmutedRemote,
 }) => voiceState == 'connected' && !soundMuted && hasUnmutedRemote;
 
+const micUnavailableKey = 'micUnavailable';
+
 bool isVoicePlaybackHealthy({
   required VoicePlaybackHealth health,
   required Iterable<String> expectedAudioKeys,
 }) {
-  if (!health.ctxRunning || !health.keepAlive) return false;
   if (health.recvState == 'failed' || health.recvState == 'disconnected') {
     return false;
   }
   final live = health.liveAudioKeys.toSet();
   final graphs = health.graphKeys.toSet();
+  final playing = health.playingKeys.toSet();
+  var needsGraphCtx = false;
   for (final key in expectedAudioKeys) {
-    if (!live.contains(key) || !graphs.contains(key)) return false;
+    if (!live.contains(key)) return false;
+    final hasGraph = graphs.contains(key);
+    final hasPlaying = playing.contains(key);
+    if (!hasGraph && !hasPlaying) return false;
+    if (hasGraph && !hasPlaying) needsGraphCtx = true;
+  }
+  if (needsGraphCtx || expectedAudioKeys.isEmpty) {
+    if (!health.ctxRunning || !health.keepAlive) return false;
   }
   return true;
+}
+
+/// Tracks are live but output is locked (Safari autoplay / suspended context).
+bool isVoicePlaybackGestureLocked({
+  required VoicePlaybackHealth health,
+  required Iterable<String> expectedAudioKeys,
+}) {
+  if (expectedAudioKeys.isEmpty) return false;
+  if (health.recvState == 'failed' || health.recvState == 'disconnected') {
+    return false;
+  }
+  final live = health.liveAudioKeys.toSet();
+  for (final key in expectedAudioKeys) {
+    if (!live.contains(key)) return false;
+  }
+  return !isVoicePlaybackHealthy(
+    health: health,
+    expectedAudioKeys: expectedAudioKeys,
+  );
 }
 
 int rejoinsInVoiceWindow(List<DateTime> times, DateTime now) {

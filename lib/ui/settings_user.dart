@@ -432,7 +432,7 @@ class _DevicesSettingsTabState extends State<DevicesSettingsTab> {
     final outputs = _of('audiooutput');
     final cameras = _of('videoinput');
     final mic = _validId(store.micDevice, inputs);
-    final speaker = _validId(store.speakerDevice, outputs);
+    final speaker = _validId(s.speakerOutputId, outputs);
     final camera = _validId(store.cameraDevice, cameras);
     final defaultLabel = l('defaultDevice');
 
@@ -455,9 +455,7 @@ class _DevicesSettingsTabState extends State<DevicesSettingsTab> {
                 item(d.deviceId, d.label.isEmpty ? d.deviceId : d.label),
             ],
             onChanged: (v) async {
-              await store.setSpeakerDevice(v == null || v.isEmpty ? null : v);
-              PlatformBridge.setOutputDevice(store.speakerDevice);
-              s.refresh();
+              await s.applySpeakerDevice(v == null || v.isEmpty ? null : v);
               if (mounted) setState(() {});
             },
           ),
@@ -546,6 +544,18 @@ class _DevicesSettingsTabState extends State<DevicesSettingsTab> {
           description: l('skipDeviceCheckDesc'),
           value: store.skipDeviceCheck,
           onChanged: (v) => _persist(() => store.setSkipDeviceCheck(v)),
+        ),
+        SettingsToggleRow(
+          label: l('keepScreenOnVoice'),
+          description: l('keepScreenOnVoiceDesc'),
+          value: store.keepScreenOnVoice,
+          onChanged: (v) async {
+            if (v) {
+              if (!await confirmKeepScreenOnVoice(context)) return;
+            }
+            await widget.s.setKeepScreenOnVoice(v);
+            if (mounted) setState(() {});
+          },
         ),
         SettingsGroup(
           label: l('webcam'),
@@ -1217,11 +1227,7 @@ class _CurrentBrowserTokenState extends State<CurrentBrowserToken> {
                 label: l('accessBansDeviceBan'),
                 danger: true,
                 onPressed: () async {
-                  final ok = await banMemberBrowser(
-                    context,
-                    widget.s,
-                    token,
-                  );
+                  final ok = await banMemberBrowser(context, widget.s, token);
                   if (!ok || !mounted) return;
                   setState(() => _bannedLocally = true);
                   await widget.onBanned?.call();

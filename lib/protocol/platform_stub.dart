@@ -21,6 +21,7 @@ class MediaStats {
 class PlatformBridge {
   static bool get available => false;
   static bool get isIos => false;
+  static bool get canSetOutputDevice => false;
   static bool get canShareScreen => false;
 
   static Future<void> ensureReady() async {}
@@ -58,6 +59,7 @@ class PlatformBridge {
   static Future<String> consume(Map<String, dynamic> info) async => '';
   static void closeProducer(String kind) {}
   static void pauseMic(bool paused) {}
+  static void setKeepScreenAwake(bool on) {}
   static bool consumerTrackLive(String key) => false;
   static bool get audioProducerLive => false;
   static void closeConsumer(String key) {}

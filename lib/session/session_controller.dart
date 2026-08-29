@@ -127,10 +127,13 @@ class SessionController extends ChangeNotifier {
   Timer? _iceDisconnectedSend;
   Timer? _iceDisconnectedRecv;
   DateTime? _voiceConnectedAt;
+  String? appliedSpeakerDevice;
+  String? lastExternalOutputId;
   DateTime? _playbackDeadSince;
   bool _didLightPlaybackRecovery = false;
   bool _silentRejoining = false;
   bool _checkingPlayback = false;
+  bool voiceAudioLocked = false;
   bool _closingByUser = false;
   DateTime? _ignoreOwnVoiceLeaveUntil;
   final _autoRejoinAt = <DateTime>[];
@@ -1920,7 +1923,7 @@ class SessionController extends ChangeNotifier {
     }
     connectedVoiceChannelId = channelId;
     rtpCapabilities = await PlatformBridge.loadDevice(caps);
-    PlatformBridge.setOutputDevice(store.speakerDevice);
+    PlatformBridge.setOutputDevice(speakerOutputId);
     PlatformBridge.setCameraDevice(store.cameraDevice);
     if (store.ptt) micMuted = true;
     if (!_msBound) {
@@ -1933,6 +1936,7 @@ class SessionController extends ChangeNotifier {
     final recv = asJsonMap(await trpc!.mutate('voice.createConsumerTransport'));
     _recvConnected = Completer<void>();
     await PlatformBridge.createRecvTransport(recv, ice);
+    var micFailed = !haveMic;
     if (haveMic) {
       try {
         await PlatformBridge.produce(StreamKind.audio);
@@ -1940,7 +1944,10 @@ class SessionController extends ChangeNotifier {
       } catch (e) {
         _log('produce audio: $e');
         micMuted = true;
+        micFailed = true;
       }
+    } else {
+      micMuted = true;
     }
     await _waitForRecvConnected();
     if (connectedVoiceChannelId != channelId) return;
@@ -1953,7 +1960,8 @@ class SessionController extends ChangeNotifier {
     _scheduleProducerResync();
     PlatformBridge.resumePlayback();
     voiceState = 'connected';
-    voiceError = null;
+    voiceError = micFailed ? micUnavailableKey : null;
+    if (micFailed) unawaited(_syncVoiceState());
     _voiceConnectedAt = DateTime.now();
     _playbackDeadSince = null;
     _didLightPlaybackRecovery = false;
@@ -1961,6 +1969,7 @@ class SessionController extends ChangeNotifier {
     if (!_silentRejoining) {
       PlatformBridge.playSound(KurierSoundType.ownUserJoinedVoiceChannel);
     }
+    syncKeepScreenAwake();
   }
 
   Future<void> _failVoice(Object e) async {
@@ -2220,6 +2229,7 @@ class SessionController extends ChangeNotifier {
           PlatformBridge.resumePlayback();
           await _resyncRemoteProducers();
           await ensureAudioProducer();
+          syncKeepScreenAwake();
         } else if (name == 'micEnded') {
           await ensureAudioProducer();
         } else if (name == 'screenEnded') {
@@ -2283,6 +2293,7 @@ class SessionController extends ChangeNotifier {
 
   void _resetVoiceLocal() {
     connectedVoiceChannelId = null;
+    PlatformBridge.setKeepScreenAwake(false);
     PlatformBridge.closeAll();
     webcam = false;
     sharing = false;
@@ -2304,6 +2315,7 @@ class SessionController extends ChangeNotifier {
     _voiceConnectedAt = null;
     _playbackDeadSince = null;
     _didLightPlaybackRecovery = false;
+    voiceAudioLocked = false;
   }
 
   @visibleForTesting
@@ -2337,6 +2349,17 @@ class SessionController extends ChangeNotifier {
     await _checkVoicePlaybackHealth();
   }
 
+  void syncKeepScreenAwake() {
+    final want = connectedVoiceChannelId != null && store.keepScreenOnVoice;
+    PlatformBridge.setKeepScreenAwake(want);
+  }
+
+  Future<void> setKeepScreenOnVoice(bool v) async {
+    await store.setKeepScreenOnVoice(v);
+    syncKeepScreenAwake();
+    notifyListeners();
+  }
+
   Future<void> setMicMuted(bool v) async {
     micMuted = v;
     PlatformBridge.playSound(
@@ -2349,6 +2372,16 @@ class SessionController extends ChangeNotifier {
       await ensureAudioProducer();
     }
     await _syncVoiceState();
+    notifyListeners();
+  }
+
+  String? get speakerOutputId => appliedSpeakerDevice ?? store.speakerDevice;
+
+  Future<void> applySpeakerDevice(String? id) async {
+    final next = (id == null || id.isEmpty) ? null : id;
+    appliedSpeakerDevice = next;
+    await store.setSpeakerDevice(next);
+    PlatformBridge.setOutputDevice(next);
     notifyListeners();
   }
 
@@ -2575,6 +2608,10 @@ class SessionController extends ChangeNotifier {
       if (!shouldReceive) {
         _playbackDeadSince = null;
         _didLightPlaybackRecovery = false;
+        if (voiceAudioLocked) {
+          voiceAudioLocked = false;
+          notifyListeners();
+        }
         return;
       }
       final health = await PlatformBridge.playbackHealth();
@@ -2593,6 +2630,10 @@ class SessionController extends ChangeNotifier {
       if (healthy) {
         _playbackDeadSince = null;
         _didLightPlaybackRecovery = false;
+        if (voiceAudioLocked) {
+          voiceAudioLocked = false;
+          notifyListeners();
+        }
         return;
       }
       final connectedAt = _voiceConnectedAt;
@@ -2600,6 +2641,20 @@ class SessionController extends ChangeNotifier {
           connectedAt != null &&
           now.difference(connectedAt) >= kVoicePlaybackGrace;
       if (!pastGrace) return;
+      if (isVoicePlaybackGestureLocked(
+        health: health,
+        expectedAudioKeys: expected,
+      )) {
+        if (!voiceAudioLocked) {
+          voiceAudioLocked = true;
+          notifyListeners();
+        }
+        return;
+      }
+      if (voiceAudioLocked) {
+        voiceAudioLocked = false;
+        notifyListeners();
+      }
       _playbackDeadSince ??= now;
       if (!_didLightPlaybackRecovery) {
         _didLightPlaybackRecovery = true;
@@ -2623,6 +2678,13 @@ class SessionController extends ChangeNotifier {
     } finally {
       _checkingPlayback = false;
     }
+  }
+
+  Future<void> enableVoiceAudio() async {
+    await PlatformBridge.unlockAudio();
+    PlatformBridge.resumePlayback();
+    voiceAudioLocked = false;
+    notifyListeners();
   }
 
   Future<void> _silentRejoinVoice() async {

@@ -9,12 +9,14 @@ import 'package:kurier_web/app/l10n_tables.dart';
 import 'package:kurier_web/core/custom_emoji.dart';
 import 'package:kurier_web/core/emoji_codec.dart';
 import 'package:kurier_web/protocol/activity_log.dart';
+import 'package:kurier_web/protocol/audio_output.dart';
 import 'package:kurier_web/protocol/config.dart';
 import 'package:kurier_web/protocol/device_token.dart';
 import 'package:kurier_web/protocol/http_api.dart';
 import 'package:kurier_web/protocol/mentions.dart';
 import 'package:kurier_web/protocol/models.dart';
 import 'package:kurier_web/protocol/permissions.dart';
+import 'package:kurier_web/protocol/platform.dart';
 import 'package:kurier_web/protocol/search_query.dart';
 import 'package:kurier_web/protocol/sounds.dart';
 import 'package:kurier_web/protocol/trpc_client.dart';
@@ -212,6 +214,94 @@ void main() {
     });
   });
 
+  group('audio output', () {
+    MediaDeviceInfo out(String id, String label) =>
+        MediaDeviceInfo(deviceId: id, kind: 'audiooutput', label: label);
+
+    test('drops virtual default and communications devices', () {
+      final classified = classifyAudioOutputs([
+        out('default', 'Default'),
+        out('communications', 'Communications'),
+        out('', 'Default'),
+        out('spk', 'Speaker'),
+        MediaDeviceInfo(
+          deviceId: 'mic',
+          kind: 'audioinput',
+          label: 'Built-in Microphone',
+        ),
+      ]);
+      expect(classified.speakers.map((d) => d.deviceId), ['spk']);
+      expect(classified.externals, isEmpty);
+    });
+
+    test('treats speakerphone and built-in labels as speaker', () {
+      final classified = classifyAudioOutputs([
+        out('a', 'Speakerphone'),
+        out('b', 'Built-in Speaker'),
+        out('c', 'BMW X5'),
+      ]);
+      expect(classified.speakers.map((d) => d.deviceId), ['a', 'b']);
+      expect(classified.externals.map((d) => d.deviceId), ['c']);
+    });
+
+    test('car bluetooth names without bluetooth in the label are external', () {
+      final classified = classifyAudioOutputs([
+        out('spk', 'Speaker'),
+        out('car', 'Gordon\'s Car'),
+      ]);
+      expect(audioOutputRoute('spk', classified), AudioOutputRoute.speaker);
+      expect(audioOutputRoute('car', classified), AudioOutputRoute.bluetooth);
+      expect(audioOutputRoute(null, classified), AudioOutputRoute.unknown);
+    });
+
+    test('toggles from default to speaker then to last external', () {
+      final classified = classifyAudioOutputs([
+        out('spk', 'Speaker'),
+        out('buds', 'AirPods'),
+        out('car', 'Car Stereo'),
+      ]);
+      final toSpeaker = nextAudioOutput(
+        currentId: null,
+        classified: classified,
+      );
+      expect(toSpeaker.kind, AudioOutputToggle.toDevice);
+      expect(toSpeaker.deviceId, 'spk');
+
+      final toLast = nextAudioOutput(
+        currentId: 'spk',
+        classified: classified,
+        lastExternalId: 'car',
+      );
+      expect(toLast.kind, AudioOutputToggle.toDevice);
+      expect(toLast.deviceId, 'car');
+    });
+
+    test('toggles from speaker to first external when last is gone', () {
+      final classified = classifyAudioOutputs([
+        out('spk', 'Speaker'),
+        out('buds', 'WH-1000XM4'),
+      ]);
+      final result = nextAudioOutput(
+        currentId: 'spk',
+        classified: classified,
+        lastExternalId: 'missing',
+      );
+      expect(result.deviceId, 'buds');
+    });
+
+    test('asks to pick when no labeled speaker exists', () {
+      final classified = classifyAudioOutputs([out('car', 'Car Stereo')]);
+      final result = nextAudioOutput(currentId: null, classified: classified);
+      expect(result.kind, AudioOutputToggle.pickDevice);
+    });
+
+    test('reports no other devices when only speaker is present', () {
+      final classified = classifyAudioOutputs([out('spk', 'Speaker')]);
+      final result = nextAudioOutput(currentId: 'spk', classified: classified);
+      expect(result.kind, AudioOutputToggle.noOtherDevices);
+    });
+  });
+
   group('voice protocol', () {
     test('unwraps router RTP capabilities', () {
       final caps = routerRtpCapabilitiesOf({
@@ -390,6 +480,69 @@ void main() {
             recvState: 'disconnected',
             liveAudioKeys: ['2:audio'],
             graphKeys: ['2:audio'],
+          ),
+          expectedAudioKeys: ['2:audio'],
+        ),
+        isFalse,
+      );
+    });
+
+    test('playback health accepts HTML audio without a Web Audio graph', () {
+      const html = VoicePlaybackHealth(
+        ctxRunning: false,
+        keepAlive: false,
+        recvState: 'connected',
+        liveAudioKeys: ['2:audio'],
+        playingKeys: ['2:audio'],
+      );
+      expect(
+        isVoicePlaybackHealthy(health: html, expectedAudioKeys: ['2:audio']),
+        isTrue,
+      );
+      expect(
+        isVoicePlaybackHealthy(
+          health: VoicePlaybackHealth(
+            ctxRunning: true,
+            keepAlive: true,
+            recvState: 'connected',
+            liveAudioKeys: ['2:audio'],
+          ),
+          expectedAudioKeys: ['2:audio'],
+        ),
+        isFalse,
+      );
+    });
+
+    test('gesture-locked when tracks are live but output is silent', () {
+      const locked = VoicePlaybackHealth(
+        ctxRunning: false,
+        keepAlive: false,
+        recvState: 'connected',
+        liveAudioKeys: ['2:audio'],
+      );
+      expect(
+        isVoicePlaybackGestureLocked(
+          health: locked,
+          expectedAudioKeys: ['2:audio'],
+        ),
+        isTrue,
+      );
+      expect(
+        isVoicePlaybackGestureLocked(
+          health: VoicePlaybackHealth(
+            recvState: 'connected',
+            liveAudioKeys: ['2:audio'],
+            playingKeys: ['2:audio'],
+          ),
+          expectedAudioKeys: ['2:audio'],
+        ),
+        isFalse,
+      );
+      expect(
+        isVoicePlaybackGestureLocked(
+          health: VoicePlaybackHealth(
+            recvState: 'failed',
+            liveAudioKeys: ['2:audio'],
           ),
           expectedAudioKeys: ['2:audio'],
         ),
@@ -1914,7 +2067,10 @@ void main() {
       expect(normalizeDeviceToken('not-a-uuid'), isNull);
       expect(normalizeDeviceToken(''), isNull);
       expect(normalizeDeviceToken(null), isNull);
-      expect(normalizeDeviceToken('550e8400-e29b-41d4-a716-44665544000'), isNull);
+      expect(
+        normalizeDeviceToken('550e8400-e29b-41d4-a716-44665544000'),
+        isNull,
+      );
     });
 
     test('generateDeviceToken is a hyphenated UUID v4', () {
@@ -1993,27 +2149,27 @@ void main() {
       expect(assignment, contains('Secure'));
     });
 
-    test('HostsStore keeps a valid UUID and migrates alphanumeric prefs',
-        () async {
-      SharedPreferences.setMockInitialValues({
-        'kurier.deviceToken': uuid,
-      });
-      var prefs = await SharedPreferences.getInstance();
-      await prefs.reload();
-      final keep = HostsStore();
-      await keep.load();
-      expect(keep.deviceToken(), uuid);
+    test(
+      'HostsStore keeps a valid UUID and migrates alphanumeric prefs',
+      () async {
+        SharedPreferences.setMockInitialValues({'kurier.deviceToken': uuid});
+        var prefs = await SharedPreferences.getInstance();
+        await prefs.reload();
+        final keep = HostsStore();
+        await keep.load();
+        expect(keep.deviceToken(), uuid);
 
-      SharedPreferences.setMockInitialValues({
-        'kurier.deviceToken': 'abcdefghijklmnopqrstuvwxyz012345',
-      });
-      prefs = await SharedPreferences.getInstance();
-      await prefs.reload();
-      final migrate = HostsStore();
-      await migrate.load();
-      final migrated = migrate.deviceToken();
-      expect(normalizeDeviceToken(migrated), migrated);
-      expect(migrated, isNot('abcdefghijklmnopqrstuvwxyz012345'));
-    });
+        SharedPreferences.setMockInitialValues({
+          'kurier.deviceToken': 'abcdefghijklmnopqrstuvwxyz012345',
+        });
+        prefs = await SharedPreferences.getInstance();
+        await prefs.reload();
+        final migrate = HostsStore();
+        await migrate.load();
+        final migrated = migrate.deviceToken();
+        expect(normalizeDeviceToken(migrated), migrated);
+        expect(migrated, isNot('abcdefghijklmnopqrstuvwxyz012345'));
+      },
+    );
   });
 }

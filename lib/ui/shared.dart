@@ -757,3 +757,39 @@ bool messagesFormGroup(KurierMessage prev, KurierMessage next) {
   if (!messagesShareAuthor(prev, next)) return false;
   return (next.createdAt - prev.createdAt).abs() < kMessageGroupWindowMs;
 }
+
+Future<bool> confirmKeepScreenOnVoice(BuildContext context) async {
+  final l = L10n.of(context);
+  final ok = await showDialog<bool>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: Text(l('keepScreenOnVoice')),
+      content: Text(l('keepScreenOnVoiceWarn')),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(ctx, false),
+          child: Text(l('cancel')),
+        ),
+        TextButton(
+          onPressed: () => Navigator.pop(ctx, true),
+          child: Text(l('ok')),
+        ),
+      ],
+    ),
+  );
+  return ok == true;
+}
+
+Future<void> toggleKeepScreenOnVoice(
+  BuildContext context,
+  SessionController session,
+) async {
+  if (session.store.keepScreenOnVoice) {
+    await session.setKeepScreenOnVoice(false);
+    return;
+  }
+  if (!context.mounted) return;
+  if (!await confirmKeepScreenOnVoice(context)) return;
+  if (!context.mounted) return;
+  await session.setKeepScreenOnVoice(true);
+}
