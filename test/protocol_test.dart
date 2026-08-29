@@ -239,8 +239,10 @@ void main() {
         out('a', 'Speakerphone'),
         out('b', 'Built-in Speaker'),
         out('c', 'BMW X5'),
+        out('d', 'Built-in Earpiece'),
       ]);
       expect(classified.speakers.map((d) => d.deviceId), ['a', 'b']);
+      expect(classified.earpieces.map((d) => d.deviceId), ['d']);
       expect(classified.externals.map((d) => d.deviceId), ['c']);
     });
 
@@ -251,10 +253,10 @@ void main() {
       ]);
       expect(audioOutputRoute('spk', classified), AudioOutputRoute.speaker);
       expect(audioOutputRoute('car', classified), AudioOutputRoute.bluetooth);
-      expect(audioOutputRoute(null, classified), AudioOutputRoute.unknown);
+      expect(audioOutputRoute(null, classified), AudioOutputRoute.earpiece);
     });
 
-    test('toggles from default to speaker then to last external', () {
+    test('toggles from phone to speaker then to last external then phone', () {
       final classified = classifyAudioOutputs([
         out('spk', 'Speaker'),
         out('buds', 'AirPods'),
@@ -274,6 +276,10 @@ void main() {
       );
       expect(toLast.kind, AudioOutputToggle.toDevice);
       expect(toLast.deviceId, 'car');
+
+      final toPhone = nextAudioOutput(currentId: 'car', classified: classified);
+      expect(toPhone.kind, AudioOutputToggle.toDevice);
+      expect(toPhone.deviceId, isNull);
     });
 
     test('toggles from speaker to first external when last is gone', () {
@@ -289,16 +295,18 @@ void main() {
       expect(result.deviceId, 'buds');
     });
 
-    test('asks to pick when no labeled speaker exists', () {
+    test('toggles to bluetooth when no labeled speaker exists', () {
       final classified = classifyAudioOutputs([out('car', 'Car Stereo')]);
       final result = nextAudioOutput(currentId: null, classified: classified);
-      expect(result.kind, AudioOutputToggle.pickDevice);
+      expect(result.kind, AudioOutputToggle.toDevice);
+      expect(result.deviceId, 'car');
     });
 
-    test('reports no other devices when only speaker is present', () {
+    test('toggles speaker back to phone when no bluetooth is present', () {
       final classified = classifyAudioOutputs([out('spk', 'Speaker')]);
       final result = nextAudioOutput(currentId: 'spk', classified: classified);
-      expect(result.kind, AudioOutputToggle.noOtherDevices);
+      expect(result.kind, AudioOutputToggle.toDevice);
+      expect(result.deviceId, isNull);
     });
   });
 

@@ -1,28 +1,35 @@
 import 'platform.dart';
 
-enum AudioOutputRoute { speaker, bluetooth, unknown }
+enum AudioOutputRoute { earpiece, speaker, bluetooth, unknown }
 
 enum AudioOutputToggle { toDevice, noOtherDevices, pickDevice }
 
 class ClassifiedAudioOutputs {
   const ClassifiedAudioOutputs({
+    this.earpieces = const [],
     this.speakers = const [],
     this.externals = const [],
   });
 
+  final List<MediaDeviceInfo> earpieces;
   final List<MediaDeviceInfo> speakers;
   final List<MediaDeviceInfo> externals;
 
+  bool get hasEarpiece => earpieces.isNotEmpty;
   bool get hasSpeaker => speakers.isNotEmpty;
   bool get hasExternal => externals.isNotEmpty;
 
-  List<MediaDeviceInfo> get realDevices => [...speakers, ...externals];
+  List<MediaDeviceInfo> get realDevices => [
+    ...earpieces,
+    ...speakers,
+    ...externals,
+  ];
 }
 
 class AudioOutputToggleResult {
   const AudioOutputToggleResult._(this.kind, this.deviceId);
 
-  const AudioOutputToggleResult.toDevice(String id)
+  const AudioOutputToggleResult.toDevice(String? id)
     : this._(AudioOutputToggle.toDevice, id);
 
   const AudioOutputToggleResult.noOtherDevices()
@@ -43,11 +50,26 @@ bool isVirtualAudioOutput(MediaDeviceInfo device) {
   return false;
 }
 
+bool isEarpieceOutputLabel(String label) {
+  final l = label.toLowerCase();
+  return l.contains('earpiece') ||
+      l.contains('handset') ||
+      l.contains('telephony') ||
+      l.contains('receiver');
+}
+
 bool isSpeakerOutputLabel(String label) {
+  if (isEarpieceOutputLabel(label)) return false;
   final l = label.toLowerCase();
   return l.contains('speakerphone') ||
       l.contains('speaker') ||
       l.contains('built-in');
+}
+
+AudioOutputRoute routeForOutputLabel(String label) {
+  if (isEarpieceOutputLabel(label)) return AudioOutputRoute.earpiece;
+  if (isSpeakerOutputLabel(label)) return AudioOutputRoute.speaker;
+  return AudioOutputRoute.bluetooth;
 }
 
 ClassifiedAudioOutputs classifyAudioOutputs(Iterable<MediaDeviceInfo> devices) {
@@ -55,8 +77,14 @@ ClassifiedAudioOutputs classifyAudioOutputs(Iterable<MediaDeviceInfo> devices) {
       .where((d) => d.kind == 'audiooutput' && !isVirtualAudioOutput(d))
       .toList();
   return ClassifiedAudioOutputs(
+    earpieces: real.where((d) => isEarpieceOutputLabel(d.label)).toList(),
     speakers: real.where((d) => isSpeakerOutputLabel(d.label)).toList(),
-    externals: real.where((d) => !isSpeakerOutputLabel(d.label)).toList(),
+    externals: real
+        .where(
+          (d) =>
+              !isEarpieceOutputLabel(d.label) && !isSpeakerOutputLabel(d.label),
+        )
+        .toList(),
   );
 }
 
@@ -65,7 +93,10 @@ AudioOutputRoute audioOutputRoute(
   ClassifiedAudioOutputs classified,
 ) {
   final id = storedId?.trim() ?? '';
-  if (id.isEmpty) return AudioOutputRoute.unknown;
+  if (id.isEmpty) return AudioOutputRoute.earpiece;
+  if (classified.earpieces.any((d) => d.deviceId == id)) {
+    return AudioOutputRoute.earpiece;
+  }
   if (classified.speakers.any((d) => d.deviceId == id)) {
     return AudioOutputRoute.speaker;
   }
@@ -80,18 +111,32 @@ AudioOutputToggleResult nextAudioOutput({
   required ClassifiedAudioOutputs classified,
   String? lastExternalId,
 }) {
-  if (!classified.hasSpeaker) {
-    return const AudioOutputToggleResult.pickDevice();
+  if (classified.realDevices.isEmpty) {
+    return const AudioOutputToggleResult.noOtherDevices();
   }
   final route = audioOutputRoute(currentId, classified);
-  if (route == AudioOutputRoute.speaker) {
-    final external = preferredExternal(classified, lastExternalId);
-    if (external == null) {
+  switch (route) {
+    case AudioOutputRoute.speaker:
+      final external = preferredExternal(classified, lastExternalId);
+      if (external != null) {
+        return AudioOutputToggleResult.toDevice(external.deviceId);
+      }
+      return AudioOutputToggleResult.toDevice(_earpieceId(classified));
+    case AudioOutputRoute.bluetooth:
+      return AudioOutputToggleResult.toDevice(_earpieceId(classified));
+    case AudioOutputRoute.earpiece:
+    case AudioOutputRoute.unknown:
+      if (classified.hasSpeaker) {
+        return AudioOutputToggleResult.toDevice(
+          classified.speakers.first.deviceId,
+        );
+      }
+      final external = preferredExternal(classified, lastExternalId);
+      if (external != null) {
+        return AudioOutputToggleResult.toDevice(external.deviceId);
+      }
       return const AudioOutputToggleResult.noOtherDevices();
-    }
-    return AudioOutputToggleResult.toDevice(external.deviceId);
   }
-  return AudioOutputToggleResult.toDevice(classified.speakers.first.deviceId);
 }
 
 MediaDeviceInfo? preferredExternal(
@@ -106,4 +151,9 @@ MediaDeviceInfo? preferredExternal(
   }
   if (classified.externals.isEmpty) return null;
   return classified.externals.first;
+}
+
+String? _earpieceId(ClassifiedAudioOutputs classified) {
+  if (classified.earpieces.isEmpty) return null;
+  return classified.earpieces.first.deviceId;
 }

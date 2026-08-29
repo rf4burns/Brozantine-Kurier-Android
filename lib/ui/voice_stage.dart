@@ -933,16 +933,7 @@ class _VoiceOutputControlState extends State<_VoiceOutputControl> {
   AudioOutputRoute get _route =>
       audioOutputRoute(session.speakerOutputId, _classified);
 
-  IconData get _icon {
-    switch (_route) {
-      case AudioOutputRoute.speaker:
-        return Icons.speaker_phone;
-      case AudioOutputRoute.bluetooth:
-        return Icons.bluetooth_audio;
-      case AudioOutputRoute.unknown:
-        return Icons.volume_up;
-    }
-  }
+  IconData get _icon => _iconForRoute(_route);
 
   void _snack(BuildContext context, String key) {
     ScaffoldMessenger.of(
@@ -1021,9 +1012,7 @@ class _VoiceOutputControlState extends State<_VoiceOutputControl> {
               for (final d in devices)
                 ListTile(
                   leading: Icon(
-                    isSpeakerOutputLabel(d.label)
-                        ? Icons.speaker_phone
-                        : Icons.bluetooth_audio,
+                    _iconForRoute(routeForOutputLabel(d.label)),
                     color: d.deviceId == current
                         ? ctx.k.accent
                         : ctx.p.foreground,
@@ -1050,12 +1039,27 @@ class _VoiceOutputControlState extends State<_VoiceOutputControl> {
 
   String _tooltip(L10n l) {
     switch (_route) {
+      case AudioOutputRoute.earpiece:
+        return l('phoneEarpiece');
       case AudioOutputRoute.speaker:
         return l('speakerPhone');
       case AudioOutputRoute.bluetooth:
         return l('bluetoothAudio');
       case AudioOutputRoute.unknown:
         return l('switchAudioOutput');
+    }
+  }
+
+  IconData _iconForRoute(AudioOutputRoute route) {
+    switch (route) {
+      case AudioOutputRoute.earpiece:
+        return Icons.phone_in_talk;
+      case AudioOutputRoute.speaker:
+        return Icons.volume_up;
+      case AudioOutputRoute.bluetooth:
+        return Icons.bluetooth_audio;
+      case AudioOutputRoute.unknown:
+        return Icons.phone_in_talk;
     }
   }
 
