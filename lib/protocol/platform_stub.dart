@@ -21,6 +21,7 @@ class MediaStats {
 class PlatformBridge {
   static bool get available => false;
   static bool get isIos => false;
+  static bool get isAndroid => false;
   static bool get canSetOutputDevice => false;
   static bool get canShareScreen => false;
 

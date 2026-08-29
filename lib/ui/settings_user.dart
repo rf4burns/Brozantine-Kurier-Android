@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 
 import '../app/l10n.dart';
 import '../app/theme.dart';
+import '../protocol/audio_output.dart';
 import '../protocol/config.dart';
 import '../protocol/device_token.dart';
 import '../protocol/permissions.dart';
@@ -383,6 +384,7 @@ class DevicesSettingsTab extends StatefulWidget {
 
 class _DevicesSettingsTabState extends State<DevicesSettingsTab> {
   List<MediaDeviceInfo> _devices = const [];
+  AudioOutputPlan _outputPlan = const AudioOutputPlan();
   var _testing = false;
   var _previewing = false;
   double _level = 0;
@@ -405,7 +407,14 @@ class _DevicesSettingsTabState extends State<DevicesSettingsTab> {
   Future<void> _load() async {
     final list = await PlatformBridge.enumerate();
     if (!mounted) return;
-    setState(() => _devices = list);
+    setState(() {
+      _devices = list;
+      _outputPlan = resolveAudioOutput(
+        devices: list,
+        canSetOutputDevice: PlatformBridge.canSetOutputDevice,
+        outputFollowsMic: PlatformBridge.isIos || PlatformBridge.isAndroid,
+      );
+    });
   }
 
   List<MediaDeviceInfo> _of(String kind) =>
@@ -429,10 +438,15 @@ class _DevicesSettingsTabState extends State<DevicesSettingsTab> {
     final s = widget.s;
     final store = s.store;
     final inputs = _of('audioinput');
-    final outputs = _of('audiooutput');
     final cameras = _of('videoinput');
+    final outputChoices = _outputPlan.usesMicRoute
+        ? _outputPlan.classified.realDevices
+        : _of('audiooutput').where((d) => !isVirtualAudioOutput(d)).toList();
     final mic = _validId(store.micDevice, inputs);
-    final speaker = _validId(s.speakerOutputId, outputs);
+    final speaker = _validId(
+      _outputPlan.usesMicRoute ? store.micDevice : s.speakerOutputId,
+      outputChoices,
+    );
     final camera = _validId(store.cameraDevice, cameras);
     final defaultLabel = l('defaultDevice');
 
@@ -440,6 +454,12 @@ class _DevicesSettingsTabState extends State<DevicesSettingsTab> {
       value: id,
       child: Text(label.isEmpty ? id : label, overflow: TextOverflow.ellipsis),
     );
+
+    String outputLabel(MediaDeviceInfo d) {
+      if (d.label.isNotEmpty) return d.label;
+      if (isDefaultAudioOutputId(d.deviceId)) return l('bluetoothAudio');
+      return d.deviceId;
+    }
 
     return SettingsCard(
       title: l('devicesTitle'),
@@ -451,11 +471,15 @@ class _DevicesSettingsTabState extends State<DevicesSettingsTab> {
             value: speaker,
             items: [
               item('', defaultLabel),
-              for (final d in outputs)
-                item(d.deviceId, d.label.isEmpty ? d.deviceId : d.label),
+              for (final d in outputChoices) item(d.deviceId, outputLabel(d)),
             ],
             onChanged: (v) async {
-              await s.applySpeakerDevice(v == null || v.isEmpty ? null : v);
+              final id = v == null || v.isEmpty ? null : v;
+              if (_outputPlan.usesMicRoute) {
+                await s.applyMicForOutput(id);
+              } else {
+                await s.applySpeakerDevice(id);
+              }
               if (mounted) setState(() {});
             },
           ),

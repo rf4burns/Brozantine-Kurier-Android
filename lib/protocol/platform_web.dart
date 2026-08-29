@@ -127,6 +127,9 @@ external JSBoolean _canShare();
 @JS('KurierMediasoup.isIos')
 external JSBoolean _isIos();
 
+@JS('KurierMediasoup.isAndroid')
+external JSBoolean _isAndroid();
+
 @JS('KurierMediasoup.canSetOutputDevice')
 external JSBoolean _canSetOutputDevice();
 
@@ -186,6 +189,7 @@ class PlatformBridge {
   static bool get available => _ms != null;
 
   static bool get isIos => available && _isIos().toDart;
+  static bool get isAndroid => available && _isAndroid().toDart;
   static bool get canSetOutputDevice =>
       available && _canSetOutputDevice().toDart;
   static bool get canShareScreen => available && _canShare().toDart;

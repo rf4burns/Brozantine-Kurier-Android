@@ -1708,6 +1708,10 @@
       );
     },
 
+    isAndroid() {
+      return /Android/i.test(navigator.userAgent);
+    },
+
     canSetOutputDevice() {
       return this._hasAudioContextSink() || this._hasMediaSink();
     },

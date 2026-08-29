@@ -37,6 +37,16 @@ class ClassifiedAudioOutputs {
   }
 }
 
+class AudioOutputPlan {
+  const AudioOutputPlan({
+    this.classified = const ClassifiedAudioOutputs(),
+    this.usesMicRoute = false,
+  });
+
+  final ClassifiedAudioOutputs classified;
+  final bool usesMicRoute;
+}
+
 class AudioOutputToggleResult {
   const AudioOutputToggleResult._(this.kind, this.deviceId);
 
@@ -103,21 +113,28 @@ bool isBluetoothInputLabel(String label) {
       l.contains('headset') ||
       l.contains('hands-free') ||
       l.contains('handsfree') ||
+      l.contains('hands free') ||
       l.contains('hfp') ||
       l.contains('a2dp') ||
       l.contains('earbuds') ||
       l.contains('earbud') ||
-      l.contains('headphones');
+      l.contains('headphones') ||
+      l.contains('carplay') ||
+      l.contains('android auto');
 }
 
 bool isBuiltInInputLabel(String label) {
   if (isBluetoothInputLabel(label)) return false;
   final l = label.toLowerCase();
   return l.contains('built-in') ||
+      l.contains('builtin') ||
       l.contains('iphone') ||
       l.contains('ipad') ||
       l.contains('internal') ||
-      l == 'microphone';
+      l.contains('camcorder') ||
+      l.contains('voice recognition') ||
+      l.contains('voice communication') ||
+      l.contains('microphone');
 }
 
 /// Older iOS has no audiooutput list. Output follows the selected mic, so
@@ -145,6 +162,33 @@ ClassifiedAudioOutputs classifyAudioOutputs(Iterable<MediaDeviceInfo> devices) {
     externals: real.where((d) => !isSpeakerOutputLabel(d.label)).toList(),
     hasDefaultSink: hasDefaultSink,
   );
+}
+
+bool audioOutputCanToggle(ClassifiedAudioOutputs classified) {
+  return classified.usesDefaultAsBluetooth || classified.hasExternal;
+}
+
+bool audioInputRouteCanToggle(ClassifiedAudioOutputs classified) {
+  return classified.hasSpeaker && classified.hasExternal;
+}
+
+/// Prefer named sinks when the browser can switch them. Otherwise, on phones,
+/// treat built-in vs Bluetooth/car mics as speaker vs headset because output
+/// follows the selected communication device.
+AudioOutputPlan resolveAudioOutput({
+  required Iterable<MediaDeviceInfo> devices,
+  required bool canSetOutputDevice,
+  required bool outputFollowsMic,
+}) {
+  final outputs = classifyAudioOutputs(devices);
+  if (canSetOutputDevice && audioOutputCanToggle(outputs)) {
+    return AudioOutputPlan(classified: outputs, usesMicRoute: false);
+  }
+  final inputs = classifyAudioInputsForOutput(devices);
+  if (outputFollowsMic && audioInputRouteCanToggle(inputs)) {
+    return AudioOutputPlan(classified: inputs, usesMicRoute: true);
+  }
+  return AudioOutputPlan(classified: outputs, usesMicRoute: false);
 }
 
 AudioOutputRoute audioOutputRoute(

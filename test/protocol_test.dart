@@ -374,14 +374,8 @@ void main() {
         input('buds', 'AirPods'),
         input('car', 'Car Hands-Free'),
       ]);
-      expect(
-        audioOutputRoute('phone', classified),
-        AudioOutputRoute.speaker,
-      );
-      expect(
-        audioOutputRoute('buds', classified),
-        AudioOutputRoute.bluetooth,
-      );
+      expect(audioOutputRoute('phone', classified), AudioOutputRoute.speaker);
+      expect(audioOutputRoute('buds', classified), AudioOutputRoute.bluetooth);
 
       final toLast = nextAudioOutput(
         currentId: 'phone',
@@ -408,6 +402,173 @@ void main() {
         classified: classified,
       );
       expect(result.kind, AudioOutputToggle.noOtherDevices);
+    });
+
+    test('treats Android camcorder and voice mics as built-in speakers', () {
+      final classified = classifyAudioInputsForOutput([
+        input('cam', 'Camcorder'),
+        input('vr', 'Voice recognition'),
+        input('vc', 'Voice communication'),
+        input('builtin', 'Builtin Mic'),
+        input('def', 'Default - Microphone'),
+        input('buds', 'Bluetooth headset'),
+      ]);
+      expect(classified.speakers.map((d) => d.deviceId), [
+        'cam',
+        'vr',
+        'vc',
+        'builtin',
+        'def',
+      ]);
+      expect(classified.externals.map((d) => d.deviceId), ['buds']);
+    });
+
+    test('treats CarPlay and Android Auto inputs as bluetooth', () {
+      expect(isBluetoothInputLabel('CarPlay'), isTrue);
+      expect(isBluetoothInputLabel('Android Auto'), isTrue);
+      expect(isBluetoothInputLabel('BMW Hands free'), isTrue);
+    });
+
+    test('uses mic-route for default-only outputs on a phone', () {
+      final plan = resolveAudioOutput(
+        devices: [
+          out('default', 'Default'),
+          input('mic', 'Built-in Microphone'),
+          input('buds', 'Bluetooth headset'),
+        ],
+        canSetOutputDevice: true,
+        outputFollowsMic: true,
+      );
+      expect(plan.usesMicRoute, isTrue);
+      expect(plan.classified.speakers.map((d) => d.deviceId), ['mic']);
+      expect(plan.classified.externals.map((d) => d.deviceId), ['buds']);
+
+      final toBt = nextAudioOutput(
+        currentId: 'mic',
+        classified: plan.classified,
+      );
+      expect(toBt.kind, AudioOutputToggle.toDevice);
+      expect(toBt.deviceId, 'buds');
+
+      final toSpeaker = nextAudioOutput(
+        currentId: 'buds',
+        classified: plan.classified,
+      );
+      expect(toSpeaker.kind, AudioOutputToggle.toDevice);
+      expect(toSpeaker.deviceId, 'mic');
+    });
+
+    test('uses mic-route on Safari even when setSinkId exists', () {
+      final plan = resolveAudioOutput(
+        devices: [
+          out('default', 'Default'),
+          input('phone', 'iPhone Microphone'),
+          input('buds', 'AirPods'),
+        ],
+        canSetOutputDevice: true,
+        outputFollowsMic: true,
+      );
+      expect(plan.usesMicRoute, isTrue);
+      expect(plan.classified.speakers.map((d) => d.deviceId), ['phone']);
+      expect(plan.classified.externals.map((d) => d.deviceId), ['buds']);
+    });
+
+    test('keeps setSinkId when Safari lists speaker and bluetooth outputs', () {
+      final plan = resolveAudioOutput(
+        devices: [
+          out('spk', 'Speakerphone'),
+          out('buds', 'AirPods'),
+          input('phone', 'iPhone Microphone'),
+          input('air', 'AirPods'),
+        ],
+        canSetOutputDevice: true,
+        outputFollowsMic: true,
+      );
+      expect(plan.usesMicRoute, isFalse);
+      expect(plan.classified.speakers.map((d) => d.deviceId), ['spk']);
+      expect(plan.classified.externals.map((d) => d.deviceId), ['buds']);
+    });
+
+    test('does not mic-route default-only outputs on desktop Safari', () {
+      final plan = resolveAudioOutput(
+        devices: [
+          out('default', 'Default'),
+          input('mic', 'MacBook Microphone'),
+          input('buds', 'AirPods'),
+        ],
+        canSetOutputDevice: true,
+        outputFollowsMic: false,
+      );
+      expect(plan.usesMicRoute, isFalse);
+      expect(plan.classified.realDevices, isEmpty);
+    });
+
+    test(
+      'uses mic-route for default-only outputs with car hands-free input',
+      () {
+        final plan = resolveAudioOutput(
+          devices: [
+            out('default', 'Default'),
+            input('phone', 'iPhone Microphone'),
+            input('car', 'BMW Hands-Free'),
+          ],
+          canSetOutputDevice: true,
+          outputFollowsMic: true,
+        );
+        expect(plan.usesMicRoute, isTrue);
+        expect(plan.classified.externals.map((d) => d.deviceId), ['car']);
+
+        final result = nextAudioOutput(
+          currentId: 'phone',
+          classified: plan.classified,
+        );
+        expect(result.kind, AudioOutputToggle.toDevice);
+        expect(result.deviceId, 'car');
+      },
+    );
+
+    test('uses mic-route for a car name with no bluetooth keyword', () {
+      final plan = resolveAudioOutput(
+        devices: [
+          out('default', 'Default'),
+          input('mic', 'Built-in Microphone'),
+          input('car', "Gordon's Car"),
+        ],
+        canSetOutputDevice: true,
+        outputFollowsMic: true,
+      );
+      expect(plan.usesMicRoute, isTrue);
+      expect(plan.classified.externals.map((d) => d.deviceId), ['car']);
+    });
+
+    test('keeps setSinkId for a named car stereo output', () {
+      final plan = resolveAudioOutput(
+        devices: [
+          out('spk', 'Speaker'),
+          out('car', 'Car Stereo'),
+          input('mic', 'Built-in Microphone'),
+          input('hands', 'BMW Hands-Free'),
+        ],
+        canSetOutputDevice: true,
+        outputFollowsMic: true,
+      );
+      expect(plan.usesMicRoute, isFalse);
+      expect(plan.classified.externals.map((d) => d.deviceId), ['car']);
+    });
+
+    test('keeps default-as-bluetooth on speakerphone plus default', () {
+      final plan = resolveAudioOutput(
+        devices: [
+          out('default', 'Default'),
+          out('spk', 'Speakerphone'),
+          input('mic', 'Built-in Microphone'),
+          input('buds', 'Bluetooth headset'),
+        ],
+        canSetOutputDevice: true,
+        outputFollowsMic: true,
+      );
+      expect(plan.usesMicRoute, isFalse);
+      expect(plan.classified.usesDefaultAsBluetooth, isTrue);
     });
   });
 

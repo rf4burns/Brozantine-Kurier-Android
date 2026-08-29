@@ -908,16 +908,25 @@ class _VoiceOutputControl extends StatefulWidget {
 }
 
 class _VoiceOutputControlState extends State<_VoiceOutputControl> {
-  ClassifiedAudioOutputs _classified = const ClassifiedAudioOutputs();
+  AudioOutputPlan _plan = const AudioOutputPlan();
   int _deviceEpoch = 0;
 
   SessionController get session => widget.session;
 
-  bool get _usesMicRoute =>
-      PlatformBridge.isIos && !PlatformBridge.canSetOutputDevice;
+  ClassifiedAudioOutputs get _classified => _plan.classified;
+
+  bool get _usesMicRoute => _plan.usesMicRoute;
 
   String? get _currentId =>
       _usesMicRoute ? session.store.micDevice : session.speakerOutputId;
+
+  String get _systemSwitchKey =>
+      PlatformBridge.isIos ? 'audioOutputIos' : 'audioOutputSystem';
+
+  String _noSwitchSnack(ClassifiedAudioOutputs classified) {
+    if (classified.realDevices.isEmpty) return _systemSwitchKey;
+    return 'noOtherAudioDevices';
+  }
 
   @override
   void initState() {
@@ -950,15 +959,20 @@ class _VoiceOutputControlState extends State<_VoiceOutputControl> {
 
   Future<ClassifiedAudioOutputs> _refreshDevices() async {
     final list = await PlatformBridge.enumerate();
-    final classified = _usesMicRoute
-        ? classifyAudioInputsForOutput(list)
-        : classifyAudioOutputs(list);
-    final current = _currentId;
+    final plan = resolveAudioOutput(
+      devices: list,
+      canSetOutputDevice: PlatformBridge.canSetOutputDevice,
+      outputFollowsMic: PlatformBridge.isIos || PlatformBridge.isAndroid,
+    );
+    final classified = plan.classified;
+    final current = plan.usesMicRoute
+        ? session.store.micDevice
+        : session.speakerOutputId;
     if (current != null &&
         classified.externals.any((d) => d.deviceId == current)) {
       session.lastExternalOutputId = current;
     }
-    if (mounted) setState(() => _classified = classified);
+    if (mounted) setState(() => _plan = plan);
     return classified;
   }
 
@@ -988,7 +1002,7 @@ class _VoiceOutputControlState extends State<_VoiceOutputControl> {
   Future<void> _onTap() async {
     if (!mounted) return;
     if (!PlatformBridge.canSetOutputDevice && !_usesMicRoute) {
-      _snack(context, 'audioOutputIos');
+      _snack(context, _systemSwitchKey);
       return;
     }
     var classified = _classified;
@@ -996,8 +1010,8 @@ class _VoiceOutputControlState extends State<_VoiceOutputControl> {
       classified = await _refreshDevices();
       if (!mounted) return;
     }
-    if (_usesMicRoute && classified.realDevices.isEmpty) {
-      _snack(context, 'audioOutputIos');
+    if (classified.realDevices.isEmpty) {
+      _snack(context, _noSwitchSnack(classified));
       return;
     }
     final result = nextAudioOutput(
@@ -1013,7 +1027,7 @@ class _VoiceOutputControlState extends State<_VoiceOutputControl> {
           if (mounted) _snack(context, 'audioOutputFailed');
         }
       case AudioOutputToggle.noOtherDevices:
-        _snack(context, 'noOtherAudioDevices');
+        _snack(context, _noSwitchSnack(classified));
       case AudioOutputToggle.pickDevice:
         await _showPicker(classified);
     }
@@ -1023,13 +1037,13 @@ class _VoiceOutputControlState extends State<_VoiceOutputControl> {
   Future<void> _onLongPress() async {
     if (!mounted) return;
     if (!PlatformBridge.canSetOutputDevice && !_usesMicRoute) {
-      _snack(context, 'audioOutputIos');
+      _snack(context, _systemSwitchKey);
       return;
     }
     final classified = await _refreshDevices();
     if (!mounted) return;
-    if (_usesMicRoute && classified.realDevices.isEmpty) {
-      _snack(context, 'audioOutputIos');
+    if (classified.realDevices.isEmpty) {
+      _snack(context, _noSwitchSnack(classified));
       return;
     }
     await _showPicker(classified);
@@ -1051,7 +1065,7 @@ class _VoiceOutputControlState extends State<_VoiceOutputControl> {
   Future<void> _showPicker(ClassifiedAudioOutputs classified) async {
     final devices = classified.realDevices;
     if (devices.isEmpty) {
-      _snack(context, 'noOtherAudioDevices');
+      _snack(context, _noSwitchSnack(classified));
       return;
     }
     final l = L10n.of(context);
