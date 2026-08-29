@@ -71,6 +71,7 @@ Future<void> androidStoreSession({
 
 void Function(String action)? onVoiceNotificationAction;
 void Function(PendingDeepLink link)? onAndroidNotificationOpened;
+void Function(int channelId)? onAndroidMarkRead;
 
 Future<void> androidConsumePendingShare(dynamic session) async {}
 

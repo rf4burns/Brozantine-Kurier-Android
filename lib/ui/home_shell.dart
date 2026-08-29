@@ -6,6 +6,7 @@ import '../app/l10n.dart';
 import '../app/theme.dart';
 import '../protocol/models.dart';
 import '../protocol/permissions.dart';
+import '../protocol/presence.dart';
 import '../session/session_controller.dart';
 import '../native/android_runtime.dart';
 import 'chat_panel.dart';
@@ -417,8 +418,11 @@ class ServerRail extends StatelessWidget {
     final l = L10n.of(context);
     final s = session;
     final dmsOn = s.publicSettings['directMessagesEnabled'] != false;
+    final showPresence =
+        breakpointOf(MediaQuery.sizeOf(context).width) != Breakpoint.phone;
     return Container(
       width: kRailWidth,
+      height: double.infinity,
       color: context.p.rail,
       padding: const EdgeInsets.symmetric(vertical: 12),
       child: Column(
@@ -474,7 +478,44 @@ class ServerRail extends StatelessWidget {
             onTap: () => _addHost(context, s, l),
             child: Icon(Icons.add, color: context.p.online, size: 22),
           ),
+          if (showPresence) ...[const Spacer(), _presenceBtn(context, s, l)],
         ],
+      ),
+    );
+  }
+
+  Widget _presenceBtn(BuildContext context, SessionController s, L10n l) {
+    final away = s.displayPresence == 'idle';
+    final color = away ? context.p.idle : context.p.online;
+    final label = l(away ? 'statusAway' : 'statusOnline');
+    return Tooltip(
+      message: label,
+      child: Padding(
+        padding: const EdgeInsets.only(top: 8),
+        child: Material(
+          color: context.p.card,
+          borderRadius: BorderRadius.circular(24),
+          child: InkWell(
+            key: const ValueKey('presence-toggle'),
+            onTap: s.togglePresence,
+            borderRadius: BorderRadius.circular(24),
+            child: SizedBox(
+              width: kRailIcon,
+              height: kRailIcon,
+              child: Center(
+                child: Container(
+                  width: 18,
+                  height: 18,
+                  decoration: BoxDecoration(
+                    color: color,
+                    shape: BoxShape.circle,
+                    border: Border.all(color: context.p.rail, width: 2),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -668,30 +709,30 @@ class ChannelSidebar extends StatelessWidget {
       if (s.can(Permission.manageSettings) ||
           s.can(Permission.manageRoles) ||
           s.can(Permission.viewAuditLog))
-          MenuAction(
-            icon: Icons.settings_outlined,
-            label: l('serverSettings'),
-            onTap: () => s.openOverlay('serverSettings'),
-          ),
-        if (s.can(Permission.manageChannels))
-          MenuAction(
-            icon: Icons.tag,
-            label: l('createChannel'),
-            onTap: () => _createChannel(context, s),
-          ),
-        if (s.can(Permission.manageCategories))
-          MenuAction(
-            icon: Icons.create_new_folder_outlined,
-            label: l('createCategory'),
-            onTap: () => _createCategory(context, s),
-          ),
         MenuAction(
-          icon: Icons.logout,
-          label: l('disconnect'),
-          danger: true,
-          dividerBefore: true,
-          onTap: () => s.disconnect(),
+          icon: Icons.settings_outlined,
+          label: l('serverSettings'),
+          onTap: () => s.openOverlay('serverSettings'),
         ),
+      if (s.can(Permission.manageChannels))
+        MenuAction(
+          icon: Icons.tag,
+          label: l('createChannel'),
+          onTap: () => _createChannel(context, s),
+        ),
+      if (s.can(Permission.manageCategories))
+        MenuAction(
+          icon: Icons.create_new_folder_outlined,
+          label: l('createCategory'),
+          onTap: () => _createCategory(context, s),
+        ),
+      MenuAction(
+        icon: Icons.logout,
+        label: l('disconnect'),
+        danger: true,
+        dividerBefore: true,
+        onTap: () => s.disconnect(),
+      ),
     ]);
   }
 
@@ -1204,6 +1245,8 @@ class AccountBar extends StatelessWidget {
     final s = session;
     final l = L10n.of(context);
     final me = s.me;
+    final phone =
+        breakpointOf(MediaQuery.sizeOf(context).width) == Breakpoint.phone;
     final voiceId = s.connectedVoiceChannelId;
     final canSpeak =
         voiceId == null || s.canChannel(voiceId, ChannelPermission.speak);
@@ -1218,7 +1261,9 @@ class AccountBar extends StatelessWidget {
       child: Row(
         children: [
           GestureDetector(
-            onTap: () => s.openOverlay('userSettings'),
+            onTap: phone
+                ? s.togglePresence
+                : () => s.openOverlay('userSettings'),
             child: UserAvatar(user: me, session: s, size: 32),
           ),
           const SizedBox(width: 8),
@@ -1242,7 +1287,7 @@ class AccountBar extends StatelessWidget {
                   Text(
                     me?.statusMessage?.trim().isNotEmpty == true
                         ? me!.statusMessage!
-                        : (me?.status ?? ''),
+                        : l(presenceLabelKey(s.displayPresence)),
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
                       color: context.p.faint,

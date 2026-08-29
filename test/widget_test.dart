@@ -3307,7 +3307,7 @@ void main() {
     expect(find.text('INTJ Gaymer'), findsOneWidget);
     expect(find.text('Certified INTJ Gamerboi'), findsOneWidget);
     expect(find.text('Aug 23, 2026'), findsOneWidget);
-    expect(find.text('LONESTAR'), findsOneWidget);
+    expect(find.text('LONESTAR', skipOffstage: false), findsOneWidget);
     expect(find.text('In voice'), findsOneWidget);
     expect(find.text('Join Voice'), findsOneWidget);
     expect(find.text('User volume'), findsOneWidget);
@@ -3980,11 +3980,96 @@ void main() {
               ),
               session: session,
             ),
+            UserAvatar(
+              user: KurierUser(
+                id: 4,
+                name: 'AwayPhone',
+                status: 'idle',
+                mobile: true,
+              ),
+              session: session,
+            ),
           ],
         ),
       ),
     );
 
-    expect(find.byKey(const ValueKey('mobile-status')), findsOneWidget);
+    expect(find.byKey(const ValueKey('mobile-status')), findsNWidgets(2));
+  });
+
+  testWidgets('desktop rail toggles Online and Away', (tester) async {
+    tester.view.physicalSize = const Size(1280, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final s = _readySession(selectedChannelId: 10);
+    await tester.pumpWidget(_app(s));
+    await tester.pump();
+
+    expect(find.byKey(const ValueKey('presence-toggle')), findsOneWidget);
+    expect(find.text('Online'), findsWidgets);
+    expect(s.displayPresence, 'online');
+
+    await tester.tap(find.byKey(const ValueKey('presence-toggle')));
+    await tester.pump();
+
+    expect(s.displayPresence, 'idle');
+    expect(s.me?.status, 'idle');
+    expect(find.text('Away'), findsWidgets);
+
+    await tester.tap(find.byKey(const ValueKey('presence-toggle')));
+    await tester.pump();
+    expect(s.displayPresence, 'online');
+  });
+
+  testWidgets('phone hides the rail presence button and avatar tap toggles', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final s = _readySession();
+    await tester.pumpWidget(_app(s));
+    await tester.pump();
+
+    expect(find.byKey(const ValueKey('presence-toggle')), findsNothing);
+    expect(s.displayPresence, 'online');
+
+    await tester.tap(
+      find.descendant(
+        of: find.byType(AccountBar),
+        matching: find.byType(UserAvatar),
+      ),
+    );
+    await tester.pump();
+
+    expect(s.displayPresence, 'idle');
+    expect(s.overlay, isNot('userSettings'));
+    expect(find.text('Away'), findsWidgets);
+  });
+
+  testWidgets('idle members stay in the online list and profile says Away', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1280, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final s = _readySession(selectedChannelId: 10);
+    s.users[2]!.status = 'idle';
+    await tester.pumpWidget(_app(s));
+    await tester.pump();
+
+    expect(find.text('ONLINE — 2'), findsOneWidget);
+    expect(find.text('OFFLINE — 1'), findsNothing);
+
+    await tester.tap(find.text('Gordon'));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('profile-popout')), findsOneWidget);
+    expect(find.text('Away'), findsOneWidget);
   });
 }

@@ -4,6 +4,7 @@ import '../app/breakpoints.dart';
 import '../app/l10n.dart';
 import '../app/theme.dart';
 import '../protocol/models.dart';
+import '../protocol/presence.dart';
 import '../session/session_controller.dart';
 import 'member_context_menu.dart';
 import 'shared.dart';
@@ -28,13 +29,41 @@ String formatMemberSince(int ms) {
   if (ms <= 0) return '';
   final d = DateTime.fromMillisecondsSinceEpoch(ms);
   const months = [
-    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+    'Jan',
+    'Feb',
+    'Mar',
+    'Apr',
+    'May',
+    'Jun',
+    'Jul',
+    'Aug',
+    'Sep',
+    'Oct',
+    'Nov',
+    'Dec',
   ];
   return '${months[d.month - 1]} ${d.day}, ${d.year}';
 }
 
 String profileHandle(KurierUser user) => '@${user.name}';
+
+Widget profilePresenceLine(BuildContext context, KurierUser user) {
+  if (user.deleted) return const SizedBox.shrink();
+  final l = L10n.of(context);
+  final p = context.p;
+  final color = switch (user.status) {
+    'idle' => p.idle,
+    'online' || 'dnd' => p.online,
+    _ => p.muted,
+  };
+  return Padding(
+    padding: const EdgeInsets.only(top: 4),
+    child: Text(
+      l(presenceLabelKey(user.status)),
+      style: TextStyle(color: color, fontSize: 13, fontWeight: FontWeight.w600),
+    ),
+  );
+}
 
 Offset desktopPopoutOffset({
   required Size view,
@@ -132,8 +161,10 @@ class _DesktopProfileCard extends StatelessWidget {
       anchor: session.profileAnchor,
       width: _width,
     );
-    final maxH =
-        (size.height - pos.dy - pad.bottom - 8).clamp(160.0, size.height);
+    final maxH = (size.height - pos.dy - pad.bottom - 8).clamp(
+      160.0,
+      size.height,
+    );
 
     return Positioned.fill(
       child: GestureDetector(
@@ -192,11 +223,9 @@ class _DesktopPopoutBody extends StatelessWidget {
     final p = context.p;
     final live = user;
     final a = MemberActionPlan(s, live);
-    final roles = live.roleIds
-        .map((id) => s.roles[id])
-        .whereType<KurierRole>()
-        .toList()
-      ..sort((x, y) => y.position.compareTo(x.position));
+    final roles =
+        live.roleIds.map((id) => s.roles[id]).whereType<KurierRole>().toList()
+          ..sort((x, y) => y.position.compareTo(x.position));
     final voiceId = s.voiceChannelIdOf(live.id);
     final voiceCh = voiceId != null ? s.channels[voiceId] : null;
     final occupants = voiceId != null
@@ -260,8 +289,9 @@ class _DesktopPopoutBody extends StatelessWidget {
                     color: live.deleted ? p.muted : p.foreground,
                     fontSize: 20,
                     fontWeight: FontWeight.w700,
-                    decoration:
-                        live.deleted ? TextDecoration.lineThrough : null,
+                    decoration: live.deleted
+                        ? TextDecoration.lineThrough
+                        : null,
                   ),
                 ),
                 const SizedBox(height: 2),
@@ -269,6 +299,7 @@ class _DesktopPopoutBody extends StatelessWidget {
                   profileHandle(live),
                   style: TextStyle(color: p.muted, fontSize: 14),
                 ),
+                profilePresenceLine(context, live),
                 if (live.deleted)
                   Padding(
                     padding: const EdgeInsets.only(top: 4),
@@ -337,10 +368,7 @@ class _DesktopPopoutBody extends StatelessWidget {
                       color: p.rail,
                       borderRadius: BorderRadius.circular(8),
                     ),
-                    child: UserVolumeSlider(
-                      session: s,
-                      userId: live.id,
-                    ),
+                    child: UserVolumeSlider(session: s, userId: live.id),
                   ),
                 ],
                 const SizedBox(height: 14),
@@ -454,11 +482,12 @@ class _MobileProfileBody extends StatelessWidget {
         final p = context.p;
         final live = s.users[user.id] ?? user;
         final a = MemberActionPlan(s, live);
-        final roles = live.roleIds
-            .map((id) => s.roles[id])
-            .whereType<KurierRole>()
-            .toList()
-          ..sort((x, y) => y.position.compareTo(x.position));
+        final roles =
+            live.roleIds
+                .map((id) => s.roles[id])
+                .whereType<KurierRole>()
+                .toList()
+              ..sort((x, y) => y.position.compareTo(x.position));
         final voiceId = s.voiceChannelIdOf(live.id);
         final voiceCh = voiceId != null ? s.channels[voiceId] : null;
         final occupants = voiceId != null
@@ -499,6 +528,7 @@ class _MobileProfileBody extends StatelessWidget {
                           profileHandle(live),
                           style: TextStyle(color: p.muted, fontSize: 14),
                         ),
+                        profilePresenceLine(context, live),
                         if ((live.pronouns ?? '').trim().isNotEmpty)
                           Padding(
                             padding: const EdgeInsets.only(top: 2),
@@ -583,18 +613,28 @@ class _MobileProfileBody extends StatelessWidget {
                           const SizedBox(height: 6),
                           Row(
                             children: [
-                              Icon(Icons.calendar_today, size: 16, color: p.muted),
+                              Icon(
+                                Icons.calendar_today,
+                                size: 16,
+                                color: p.muted,
+                              ),
                               const SizedBox(width: 8),
                               Text(
                                 formatMemberSince(live.createdAt),
-                                style: TextStyle(color: p.foreground, fontSize: 15),
+                                style: TextStyle(
+                                  color: p.foreground,
+                                  fontSize: 15,
+                                ),
                               ),
                             ],
                           ),
                         ],
                         if (roles.isNotEmpty) ...[
                           const SizedBox(height: 20),
-                          profileSectionLabel(context, l('roles').toUpperCase()),
+                          profileSectionLabel(
+                            context,
+                            l('roles').toUpperCase(),
+                          ),
                           const SizedBox(height: 8),
                           Wrap(
                             spacing: 8,
@@ -694,11 +734,7 @@ class _Header extends StatelessWidget {
           Positioned(
             left: 16,
             top: bannerH - overlap,
-            child: ProfileAvatarBadge(
-              session: s,
-              user: user,
-              size: avatar,
-            ),
+            child: ProfileAvatarBadge(session: s, user: user, size: avatar),
           ),
           if ((user.statusMessage ?? '').trim().isNotEmpty)
             Positioned(
@@ -706,7 +742,10 @@ class _Header extends StatelessWidget {
               top: bannerH - overlap + 8,
               right: 16,
               child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 6,
+                ),
                 decoration: BoxDecoration(
                   color: p.rail,
                   borderRadius: BorderRadius.circular(12),

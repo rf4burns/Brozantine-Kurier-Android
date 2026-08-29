@@ -44,6 +44,7 @@ class _KurierAppState extends ConsumerState<KurierApp>
       return;
     }
     androidSetAppForeground(false);
+    ref.read(sessionProvider).onAppFocusChanged(false);
     if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.inactive ||
         state == AppLifecycleState.hidden) {

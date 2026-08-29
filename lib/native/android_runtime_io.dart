@@ -46,6 +46,7 @@ final _auth = LocalAuthentication();
 
 void Function(String action)? onVoiceNotificationAction;
 void Function(PendingDeepLink link)? onAndroidNotificationOpened;
+void Function(int channelId)? onAndroidMarkRead;
 
 PendingShare? _pendingShare;
 PendingDeepLink? _pendingDeepLink;
@@ -107,13 +108,12 @@ void notificationTapBackground(NotificationResponse response) {
 
 const _messageActions = <AndroidNotificationAction>[
   AndroidNotificationAction(
-    'reply',
-    'Reply',
-    inputs: <AndroidNotificationActionInput>[
-      AndroidNotificationActionInput(label: 'Reply'),
-    ],
+    'mark_read',
+    'Mark as read',
+    showsUserInterface: false,
+    cancelNotification: true,
+    semanticAction: SemanticAction.markAsRead,
   ),
-  AndroidNotificationAction('mark_read', 'Mark as read'),
 ];
 
 Future<void> _ensurePushChannels([
@@ -201,6 +201,7 @@ Future<void> _postKind(
         'kind': kind.wire,
         'lines': view.lines,
         'chatChannelId': latest?.channelId,
+        'chatChannelIds': _inbox.channelIds(kind).toList(),
         'messageId': latest?.messageId,
         'silent': silent,
       });
@@ -349,6 +350,10 @@ Future<void> initAndroidRuntime() async {
     }
     if (call.method == 'notificationOpened') {
       _onNativeNotificationOpened(call.arguments);
+      return;
+    }
+    if (call.method == 'markRead') {
+      unawaited(_onNativeMarkRead(call.arguments));
     }
   });
   _shareSub?.cancel();
@@ -398,6 +403,24 @@ void _onNativeNotificationOpened(dynamic arguments) {
   if (link != null) onAndroidNotificationOpened?.call(link);
 }
 
+Future<void> _onNativeMarkRead(dynamic arguments) async {
+  final data = arguments is Map
+      ? Map<String, dynamic>.from(arguments)
+      : <String, dynamic>{};
+  final extraIds = <int>{};
+  final rawIds = data['channelIds'];
+  if (rawIds is List) {
+    for (final value in rawIds) {
+      final id = value is int ? value : int.tryParse('$value');
+      if (id != null && id != 0) extraIds.add(id);
+    }
+  }
+  await _markKindRead(
+    PushKind.parse(data['kind']?.toString()),
+    extraChannelIds: extraIds,
+  );
+}
+
 void _onNotificationResponse(NotificationResponse response) {
   final payload = response.payload;
   Map<String, dynamic> data = {};
@@ -406,16 +429,16 @@ void _onNotificationResponse(NotificationResponse response) {
       data = jsonDecode(payload) as Map<String, dynamic>;
     } catch (_) {}
   }
-  if (data['kind'] != null) {
-    unawaited(_cancelKind(PushKind.parse(data['kind']?.toString())));
-  }
   if (response.actionId == 'mark_read') {
-    unawaited(_markRead(data));
+    unawaited(_markKindRead(PushKind.parse(data['kind']?.toString())));
     return;
   }
   if (response.actionId == 'reply') {
     unawaited(_quickReply(data, response.input));
     return;
+  }
+  if (data['kind'] != null) {
+    unawaited(_cancelKind(PushKind.parse(data['kind']?.toString())));
   }
   _pendingDeepLink = PendingDeepLink(
     channelId: int.tryParse('${data['channelId'] ?? ''}'),
@@ -423,6 +446,22 @@ void _onNotificationResponse(NotificationResponse response) {
   );
   final link = _pendingDeepLink;
   if (link != null) onAndroidNotificationOpened?.call(link);
+}
+
+Future<void> _markKindRead(
+  PushKind kind, {
+  Set<int> extraChannelIds = const {},
+}) async {
+  await _ensureInboxLoaded();
+  final channelIds = {..._inbox.channelIds(kind), ...extraChannelIds};
+  await _cancelKind(kind);
+  for (final id in channelIds) {
+    if (onAndroidMarkRead != null) {
+      onAndroidMarkRead!(id);
+    } else {
+      unawaited(_markRead({'channelId': id}));
+    }
+  }
 }
 
 Future<void> androidConsumePendingShare(dynamic session) async {

@@ -62,8 +62,13 @@ class PushInbox {
     for (final kind in PushKind.values) kind: <PushInboxLine>[],
   };
 
-  List<PushInboxLine> lines(PushKind kind) =>
+    List<PushInboxLine> lines(PushKind kind) =>
       List<PushInboxLine>.unmodifiable(_byKind[kind] ?? const []);
+
+  Set<int> channelIds(PushKind kind) => {
+    for (final line in lines(kind))
+      if (line.channelId != null) line.channelId!,
+  };
 
   List<PushInboxLine> add(PushKind kind, PushInboxLine line) {
     final list = _byKind[kind]!;

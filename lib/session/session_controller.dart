@@ -22,6 +22,7 @@ import '../protocol/mentions.dart';
 import '../protocol/models.dart';
 import '../protocol/permissions.dart';
 import '../protocol/platform.dart';
+import '../protocol/presence.dart';
 import '../protocol/search_query.dart';
 import '../protocol/sounds.dart';
 import '../protocol/trpc_client.dart';
@@ -113,6 +114,13 @@ class SessionController extends ChangeNotifier {
   final typing = <int, List<TypingUser>>{};
   Timer? _typingSweep;
   DateTime? _lastTyped;
+  bool _manualAway = false;
+  bool _focused = true;
+  Timer? _focusAwayTimer;
+
+  /// Delay before unfocus reports Away. Tests may set this to [Duration.zero].
+  @visibleForTesting
+  Duration focusAwayDebounce = presenceFocusAwayDebounce;
 
   void refresh() => notifyListeners();
 
@@ -210,6 +218,15 @@ class SessionController extends ChangeNotifier {
       if (phase != SessionPhase.ready || link.channelId == null) return;
       takePendingDeepLink();
       unawaited(jumpToMessage(link.channelId!, link.messageId ?? 0));
+    };
+    onAndroidMarkRead = (channelId) {
+      readStates[channelId] = 0;
+      notifyListeners();
+      unawaited(() async {
+        try {
+          await trpc?.mutate('channels.markAsRead', {'channelId': channelId});
+        } catch (_) {}
+      }());
     };
     await _ensureDefaultHost();
     if (isNativeMobile && activeHost == null) {
@@ -604,7 +621,23 @@ class SessionController extends ChangeNotifier {
     }
   }
 
+  void onAppFocusChanged(bool focused) {
+    _focusAwayTimer?.cancel();
+    if (focused) {
+      if (_focused) return;
+      _focused = true;
+      unawaited(_pushPresence());
+      return;
+    }
+    _focusAwayTimer = Timer(focusAwayDebounce, () {
+      if (!_focused) return;
+      _focused = false;
+      unawaited(_pushPresence());
+    });
+  }
+
   void onAppResumed() {
+    onAppFocusChanged(true);
     if (phase == SessionPhase.disconnected) {
       final host = activeHost;
       final existing =
@@ -635,6 +668,7 @@ class SessionController extends ChangeNotifier {
         await ensureAudioProducer();
       }());
     }
+    unawaited(_pushPresence());
   }
 
   @visibleForTesting
@@ -670,6 +704,7 @@ class SessionController extends ChangeNotifier {
       ..addEntries(j.emojis.map((e) => MapEntry(e.id, e)));
     _parseVoiceMap(j.voiceMap);
     _parseExternal(j.externalStreamsMap);
+    unawaited(_pushPresence());
     final host = hosts.where((h) => h.host == activeHost).firstOrNull;
     if (host != null) {
       host.name = serverName;
@@ -1159,6 +1194,7 @@ class SessionController extends ChangeNotifier {
         connectedVoiceChannelId == cid &&
         voiceState != 'connecting') {
       _resetVoiceLocal();
+      unawaited(_pushPresence());
     } else if (uid != ownUserId && cid == connectedVoiceChannelId) {
       PlatformBridge.playSound(KurierSoundType.remoteUserLeftVoiceChannel);
     }
@@ -1317,6 +1353,48 @@ class SessionController extends ChangeNotifier {
   }
 
   KurierUser? get me => users[ownUserId];
+
+  bool get manualAway => _manualAway;
+
+  String get displayPresence => intendedPresenceStatus(
+    manualAway: _manualAway,
+    focused: _focused,
+    inVoice: connectedVoiceChannelId != null,
+  );
+
+  void togglePresence() {
+    final away = _manualAway || (!_focused && connectedVoiceChannelId == null);
+    unawaited(setPresence(away ? presenceOnline : presenceIdle));
+  }
+
+  Future<void> setPresence(String status) async {
+    if (status != presenceOnline && status != presenceIdle) return;
+    _manualAway = status == presenceIdle;
+    if (status == presenceOnline) _focused = true;
+    await _pushPresence();
+  }
+
+  void _applyLocalPresence() {
+    final self = me;
+    if (self == null) return;
+    final next = displayPresence;
+    if (self.status == next) return;
+    self.status = next;
+    notifyListeners();
+  }
+
+  @visibleForTesting
+  void applyLocalPresence() => _applyLocalPresence();
+
+  Future<void> _pushPresence() async {
+    _applyLocalPresence();
+    if (trpc == null) return;
+    try {
+      await trpc!.mutate('users.setStatus', {'status': displayPresence});
+    } catch (e) {
+      _log('setStatus: $e');
+    }
+  }
 
   bool can(String permission) {
     final meRoles = me?.roleIds ?? [];
@@ -2236,6 +2314,7 @@ class SessionController extends ChangeNotifier {
       throw StateError('voice.join did not return router RTP capabilities');
     }
     connectedVoiceChannelId = channelId;
+    unawaited(_pushPresence());
     rtpCapabilities = await PlatformBridge.loadDevice(caps);
     try {
       await PlatformBridge.setOutputDevice(speakerOutputId);
@@ -2609,6 +2688,7 @@ class SessionController extends ChangeNotifier {
     if (wasConnected && !_silentRejoining) {
       PlatformBridge.playSound(KurierSoundType.ownUserLeftVoiceChannel);
     }
+    unawaited(_pushPresence());
     notifyListeners();
   }
 
@@ -3538,6 +3618,7 @@ class SessionController extends ChangeNotifier {
     _panelWidthSave?.cancel();
     _voiceStatsTimer?.cancel();
     _recoverTimer?.cancel();
+    _focusAwayTimer?.cancel();
     _cancelProducerResyncs();
     super.dispose();
   }

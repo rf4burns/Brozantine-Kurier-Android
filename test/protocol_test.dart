@@ -20,6 +20,7 @@ import 'package:kurier_web/protocol/mentions.dart';
 import 'package:kurier_web/protocol/models.dart';
 import 'package:kurier_web/protocol/permissions.dart';
 import 'package:kurier_web/protocol/platform.dart';
+import 'package:kurier_web/protocol/presence.dart';
 import 'package:kurier_web/protocol/search_query.dart';
 import 'package:kurier_web/protocol/sounds.dart';
 import 'package:kurier_web/protocol/trpc_client.dart';
@@ -256,6 +257,73 @@ void main() {
         'mobile': false,
       }, existing: mobile);
       expect(cleared.mobile, isFalse);
+    });
+  });
+
+  group('away presence', () {
+    test('voice always reports online', () {
+      expect(
+        intendedPresenceStatus(manualAway: true, focused: false, inVoice: true),
+        'online',
+      );
+    });
+
+    test('manual away sticks while focused', () {
+      expect(
+        intendedPresenceStatus(manualAway: true, focused: true, inVoice: false),
+        'idle',
+      );
+    });
+
+    test('unfocused reports idle unless already online-and-focused', () {
+      expect(
+        intendedPresenceStatus(
+          manualAway: false,
+          focused: false,
+          inVoice: false,
+        ),
+        'idle',
+      );
+      expect(
+        intendedPresenceStatus(
+          manualAway: false,
+          focused: true,
+          inVoice: false,
+        ),
+        'online',
+      );
+    });
+
+    test('labels idle as away', () {
+      expect(presenceLabelKey('idle'), 'statusAway');
+      expect(presenceLabelKey('online'), 'statusOnline');
+      expect(presenceLabelKey('offline'), 'statusOffline');
+    });
+
+    test('toggle and unfocus do not override manual away', () async {
+      final s = SessionController();
+      s.phase = SessionPhase.ready;
+      s.ownUserId = 1;
+      s.users[1] = KurierUser(id: 1, name: 'Ada', status: 'online');
+      s.focusAwayDebounce = Duration.zero;
+
+      s.togglePresence();
+      expect(s.manualAway, isTrue);
+      expect(s.displayPresence, 'idle');
+      expect(s.me?.status, 'idle');
+
+      s.onAppFocusChanged(false);
+      await Future<void>.delayed(Duration.zero);
+      expect(s.manualAway, isTrue);
+      expect(s.displayPresence, 'idle');
+
+      s.onAppFocusChanged(true);
+      expect(s.displayPresence, 'idle');
+
+      s.connectedVoiceChannelId = 10;
+      expect(s.displayPresence, 'online');
+      s.applyLocalPresence();
+      expect(s.me?.status, 'online');
     });
   });
 
@@ -2687,6 +2755,39 @@ void main() {
         ),
       );
       expect(inbox.presentation(PushKind.mention).title, '2 mentions');
+    });
+
+    test('channelIds collects unique channels in a kind', () {
+      final inbox = PushInbox();
+      inbox.add(
+        PushKind.mention,
+        const PushInboxLine(
+          author: 'Ada',
+          body: 'a',
+          channelId: 10,
+          messageId: 1,
+        ),
+      );
+      inbox.add(
+        PushKind.mention,
+        const PushInboxLine(
+          author: 'Bob',
+          body: 'b',
+          channelId: 11,
+          messageId: 2,
+        ),
+      );
+      inbox.add(
+        PushKind.mention,
+        const PushInboxLine(
+          author: 'Cy',
+          body: 'c',
+          channelId: 10,
+          messageId: 3,
+        ),
+      );
+      expect(inbox.channelIds(PushKind.mention), {10, 11});
+      expect(inbox.channelIds(PushKind.reply), isEmpty);
     });
 
     test('dedupes by message id and drops a channel from every kind', () {

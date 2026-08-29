@@ -3222,6 +3222,7 @@ SERVER_SETTINGS_UI = {
     "lastJoinCol": "Last Join",
     "statusCol": "Status",
     "statusOnline": "Online",
+    "statusAway": "Away",
     "statusOffline": "Offline",
     "statusBanned": "Banned",
     "confirmNewPassword": "Confirm New Password",

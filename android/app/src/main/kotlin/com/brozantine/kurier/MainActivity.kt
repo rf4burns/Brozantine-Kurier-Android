@@ -24,7 +24,6 @@ class MainActivity : FlutterFragmentActivity() {
     private val nativeChannel = "com.brozantine.kurier/native"
     private val audioChannel = "com.brozantine.kurier/audio"
     private var pipWhenLeaving = false
-    private var nativeMethodChannel: MethodChannel? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -45,6 +44,7 @@ class MainActivity : FlutterFragmentActivity() {
                             .filter { it.isNotEmpty() }
                         val chatChannelId = intArg(call, "chatChannelId")
                         val messageId = intArg(call, "messageId")
+                        val chatChannelIds = intArrayArg(call, "chatChannelIds")
                         val silent = call.argument<Boolean>("silent") == true
                         showLocalNotification(
                             title,
@@ -54,6 +54,7 @@ class MainActivity : FlutterFragmentActivity() {
                             lines,
                             chatChannelId,
                             messageId,
+                            chatChannelIds,
                             silent,
                         )
                         result.success(null)
@@ -252,6 +253,18 @@ class MainActivity : FlutterFragmentActivity() {
         startActivity(intent)
     }
 
+    private fun intArrayArg(call: MethodCall, key: String): IntArray {
+        val raw = call.argument<List<*>>(key) ?: return intArrayOf()
+        return raw.mapNotNull { value ->
+            when (value) {
+                is Int -> value
+                is Long -> value.toInt()
+                is Number -> value.toInt()
+                else -> value?.toString()?.toIntOrNull()
+            }
+        }.filter { it != 0 }.toIntArray()
+    }
+
     private fun intArg(call: MethodCall, key: String): Int? {
         val value = call.argument<Any>(key) ?: return null
         return when (value) {
@@ -299,6 +312,7 @@ class MainActivity : FlutterFragmentActivity() {
         lines: List<String>,
         chatChannelId: Int?,
         messageId: Int?,
+        chatChannelIds: IntArray,
         silent: Boolean,
     ) {
         ensureNotificationChannels()
@@ -321,6 +335,32 @@ class MainActivity : FlutterFragmentActivity() {
         for (line in displayLines) {
             inbox.addLine(line)
         }
+        val channelIds = if (chatChannelIds.isNotEmpty()) {
+            chatChannelIds
+        } else if (chatChannelId != null && chatChannelId != 0) {
+            intArrayOf(chatChannelId)
+        } else {
+            intArrayOf()
+        }
+        val markReadIntent = Intent(this, KurierNotificationActionReceiver::class.java).apply {
+            action = KurierNotificationActionReceiver.ACTION_MARK_READ
+            putExtra(KurierNotificationActionReceiver.EXTRA_KIND, kind)
+            putExtra(KurierNotificationActionReceiver.EXTRA_CHANNELS, channelIds)
+        }
+        val markReadPending = PendingIntent.getBroadcast(
+            this,
+            id,
+            markReadIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val markRead = NotificationCompat.Action.Builder(
+            0,
+            "Mark as read",
+            markReadPending,
+        )
+            .setSemanticAction(NotificationCompat.Action.SEMANTIC_ACTION_MARK_AS_READ)
+            .setShowsUserInterface(false)
+            .build()
         val builder = NotificationCompat.Builder(this, channelId)
             .setSmallIcon(R.drawable.ic_stat_kurier)
             .setContentTitle(title)
@@ -328,6 +368,7 @@ class MainActivity : FlutterFragmentActivity() {
             .setStyle(inbox)
             .setContentIntent(pending)
             .setAutoCancel(true)
+            .addAction(markRead)
             .setNumber(displayLines.size.coerceAtLeast(1))
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)
@@ -342,6 +383,8 @@ class MainActivity : FlutterFragmentActivity() {
     }
 
     companion object {
+        var nativeMethodChannel: MethodChannel? = null
+            internal set
         private var askedBattery = false
         private const val EXTRA_KIND = "kurier.kind"
         private const val EXTRA_CHANNEL = "kurier.channelId"
