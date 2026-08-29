@@ -748,6 +748,9 @@
       this._applyCtxSink();
       const nodes = document.querySelectorAll("audio, video");
       nodes.forEach((el) => this._applySink(el));
+      if (global.KurierSounds && typeof global.KurierSounds.setOutputDevice === "function") {
+        global.KurierSounds.setOutputDevice(this._outputDevice);
+      }
     },
 
     setCameraDevice(deviceId) {

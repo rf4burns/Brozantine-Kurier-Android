@@ -30,6 +30,7 @@
   let keepAlive = null;
   let silentEl = null;
   let unlocked = false;
+  let outputDevice = "";
 
   const isIos = () =>
     /iPad|iPhone|iPod/.test(navigator.userAgent) ||
@@ -54,8 +55,23 @@
       if (!ctx) return null;
       audioCtx = ctx;
       hasAudioContext = true;
+      applySink(ctx);
     }
     return audioCtx;
+  };
+
+  const applySink = (ctx) => {
+    if (ctx && typeof ctx.setSinkId === "function") {
+      ctx.setSinkId(outputDevice || "").catch(() => {});
+    }
+    if (silentEl && typeof silentEl.setSinkId === "function") {
+      silentEl.setSinkId(outputDevice || "").catch(() => {});
+    }
+  };
+
+  const setOutputDevice = (deviceId) => {
+    outputDevice = deviceId || "";
+    applySink(hasAudioContext ? audioCtx : null);
   };
 
   const ensureAudioContextRunning = async () => {
@@ -461,6 +477,7 @@
       document.body.appendChild(el);
       silentEl = el;
       el.play().catch(() => {});
+      applySink(hasAudioContext ? audioCtx : null);
     } catch (_) {}
   };
 
@@ -518,6 +535,7 @@
     playSound,
     unlock,
     stopKeepAlive,
+    setOutputDevice,
     getSoundTypes: () => SOUND_TYPES.slice(),
   };
 })(window);

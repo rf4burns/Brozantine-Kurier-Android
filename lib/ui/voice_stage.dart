@@ -1039,8 +1039,6 @@ class _VoiceOutputControlState extends State<_VoiceOutputControl> {
 
   String _tooltip(L10n l) {
     switch (_route) {
-      case AudioOutputRoute.earpiece:
-        return l('phoneEarpiece');
       case AudioOutputRoute.speaker:
         return l('speakerPhone');
       case AudioOutputRoute.bluetooth:
@@ -1052,14 +1050,12 @@ class _VoiceOutputControlState extends State<_VoiceOutputControl> {
 
   IconData _iconForRoute(AudioOutputRoute route) {
     switch (route) {
-      case AudioOutputRoute.earpiece:
-        return Icons.phone_in_talk;
       case AudioOutputRoute.speaker:
         return Icons.volume_up;
       case AudioOutputRoute.bluetooth:
         return Icons.bluetooth_audio;
       case AudioOutputRoute.unknown:
-        return Icons.phone_in_talk;
+        return Icons.volume_up;
     }
   }
 
