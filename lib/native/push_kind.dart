@@ -75,3 +75,23 @@ enum PushKind {
     };
   }
 }
+
+/// Prefer FCM data fields. [notificationTitle] / [notificationBody] are
+/// fallbacks for older hosts that still send a notification block.
+({String title, String body}) fcmDisplayText(
+  Map<String, dynamic> data, {
+  String? notificationTitle,
+  String? notificationBody,
+}) {
+  final dataTitle = data['title']?.toString().trim() ?? '';
+  final dataBody = data['body']?.toString();
+  final fallbackTitle = notificationTitle?.trim() ?? '';
+  return (
+    title: dataTitle.isNotEmpty
+        ? dataTitle
+        : (fallbackTitle.isNotEmpty ? fallbackTitle : 'Kurier'),
+    body: (dataBody != null && dataBody.isNotEmpty)
+        ? dataBody
+        : (notificationBody ?? ''),
+  );
+}

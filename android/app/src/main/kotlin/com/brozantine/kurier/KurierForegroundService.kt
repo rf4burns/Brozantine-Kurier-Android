@@ -8,7 +8,6 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
-import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
@@ -19,14 +18,12 @@ import androidx.core.app.ServiceCompat
 
 class KurierForegroundService : Service() {
     private var wakeLock: PowerManager.WakeLock? = null
-    private var wifiLock: WifiManager.WifiLock? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
         super.onCreate()
         ensureChannel()
-        acquireLocks()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -44,12 +41,16 @@ class KurierForegroundService : Service() {
                 return START_STICKY
             }
             ACTION_DISCONNECT -> {
-                dispatchAction("disconnect")
+                dispatchAction("leave")
                 return START_STICKY
             }
         }
         val server = intent?.getStringExtra(EXTRA_SERVER).orEmpty().ifBlank { "Kurier" }
         val voice = intent?.getStringExtra(EXTRA_VOICE)
+        if (voice.isNullOrBlank()) {
+            stopSelf()
+            return START_NOT_STICKY
+        }
         startInForeground(server, voice)
         return START_STICKY
     }
@@ -59,24 +60,20 @@ class KurierForegroundService : Service() {
             ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
         } catch (_: Exception) {
         }
-        releaseLocks()
+        releaseLock()
         super.onDestroy()
     }
 
-    private fun startInForeground(server: String, voiceChannel: String?) {
-        val inVoice = !voiceChannel.isNullOrBlank()
-        val types = if (inVoice) {
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC or
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE or
+    private fun startInForeground(server: String, voiceChannel: String) {
+        val types =
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE or
                 ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
-        } else {
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
-        }
+        acquireLock()
         val notification = buildNotification(server, voiceChannel)
         ServiceCompat.startForeground(this, NOTIFICATION_ID, notification, types)
     }
 
-    private fun buildNotification(server: String, voiceChannel: String?): Notification {
+    private fun buildNotification(server: String, voiceChannel: String): Notification {
         val launch = packageManager.getLaunchIntentForPackage(packageName)
             ?: Intent(this, MainActivity::class.java)
         val content = PendingIntent.getActivity(
@@ -85,15 +82,10 @@ class KurierForegroundService : Service() {
             launch,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
-        val inVoice = !voiceChannel.isNullOrBlank()
-        val text = if (inVoice) {
-            "In voice · #$voiceChannel"
-        } else {
-            "Connected to $server"
-        }
+        val text = "In voice · #$voiceChannel"
         val builder = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_stat_kurier)
-            .setContentTitle("Kurier")
+            .setContentTitle(server)
             .setContentText(text)
             .setStyle(NotificationCompat.BigTextStyle().bigText(text))
             .setContentIntent(content)
@@ -102,14 +94,9 @@ class KurierForegroundService : Service() {
             .setSilent(true)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
-        if (inVoice) {
-            builder
-                .addAction(notifAction("Mute", ACTION_MUTE, 1))
-                .addAction(notifAction("Deafen", ACTION_DEAFEN, 2))
-                .addAction(notifAction("Disconnect", ACTION_LEAVE, 3))
-        } else {
-            builder.addAction(notifAction("Disconnect", ACTION_DISCONNECT, 4))
-        }
+            .addAction(notifAction("Mute", ACTION_MUTE, 1))
+            .addAction(notifAction("Deafen", ACTION_DEAFEN, 2))
+            .addAction(notifAction("Disconnect", ACTION_LEAVE, 3))
         return builder.build()
     }
 
@@ -123,7 +110,7 @@ class KurierForegroundService : Service() {
             val channel = MainActivity.nativeMethodChannel
             if (channel != null) {
                 channel.invokeMethod("voiceAction", action)
-            } else if (action == "disconnect") {
+            } else if (action == "leave" || action == "disconnect") {
                 stopSelf()
             }
         }
@@ -154,7 +141,7 @@ class KurierForegroundService : Service() {
         val manager = getSystemService(NotificationManager::class.java)
         val channel = NotificationChannel(
             CHANNEL_ID,
-            "Connection",
+            "Voice",
             NotificationManager.IMPORTANCE_LOW,
         )
         channel.setShowBadge(false)
@@ -162,38 +149,21 @@ class KurierForegroundService : Service() {
         manager.createNotificationChannel(channel)
     }
 
-    @Suppress("DEPRECATION")
-    private fun acquireLocks() {
-        if (wakeLock?.isHeld != true) {
-            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
-            wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "kurier:session").apply {
-                setReferenceCounted(false)
-                acquire()
-            }
-        }
-        if (wifiLock?.isHeld != true) {
-            val wifi = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
-            wifiLock = wifi.createWifiLock(
-                WifiManager.WIFI_MODE_FULL_HIGH_PERF,
-                "kurier:wifi",
-            ).apply {
-                setReferenceCounted(false)
-                acquire()
-            }
+    private fun acquireLock() {
+        if (wakeLock?.isHeld == true) return
+        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+        wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "kurier:voice").apply {
+            setReferenceCounted(false)
+            acquire()
         }
     }
 
-    private fun releaseLocks() {
+    private fun releaseLock() {
         try {
             if (wakeLock?.isHeld == true) wakeLock?.release()
         } catch (_: Exception) {
         }
         wakeLock = null
-        try {
-            if (wifiLock?.isHeld == true) wifiLock?.release()
-        } catch (_: Exception) {
-        }
-        wifiLock = null
     }
 
     companion object {
@@ -210,6 +180,10 @@ class KurierForegroundService : Service() {
         var actionListener: ((String) -> Unit)? = null
 
         fun start(context: Context, serverName: String, voiceChannel: String?) {
+            if (voiceChannel.isNullOrBlank()) {
+                stop(context)
+                return
+            }
             val intent = Intent(context, KurierForegroundService::class.java).apply {
                 action = ACTION_START
                 putExtra(EXTRA_SERVER, serverName)

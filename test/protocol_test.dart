@@ -2696,6 +2696,25 @@ void main() {
       expect(PushKind.message.inboxTitle(1), 'Message');
       expect(PushKind.message.inboxTitle(5), '5 messages');
     });
+
+    test('prefers FCM data title and body over the notification block', () {
+      final copy = fcmDisplayText(
+        {'title': 'Ada', 'body': 'from data'},
+        notificationTitle: 'system title',
+        notificationBody: 'from notification',
+      );
+      expect(copy.title, 'Ada');
+      expect(copy.body, 'from data');
+
+      final fallback = fcmDisplayText(
+        {},
+        notificationTitle: 'old host',
+        notificationBody: 'legacy',
+      );
+      expect(fallback.title, 'old host');
+      expect(fallback.body, 'legacy');
+      expect(fcmDisplayText({}).title, 'Kurier');
+    });
   });
 
   group('push inbox', () {

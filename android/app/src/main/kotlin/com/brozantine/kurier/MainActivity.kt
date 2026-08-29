@@ -9,9 +9,7 @@ import android.content.Context
 import android.content.Intent
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
-import android.net.Uri
 import android.os.Build
-import android.os.PowerManager
 import android.provider.Settings
 import android.util.Rational
 import androidx.core.app.NotificationCompat
@@ -78,7 +76,6 @@ class MainActivity : FlutterFragmentActivity() {
                     "startKeepAlive" -> {
                         val server = call.argument<String>("serverName") ?: "Kurier"
                         val voice = call.argument<String>("voiceChannelName")
-                        requestIgnoreBatteryOptimizations()
                         KurierForegroundService.start(this, server, voice)
                         result.success(null)
                     }
@@ -116,22 +113,6 @@ class MainActivity : FlutterFragmentActivity() {
     override fun onResume() {
         super.onResume()
         deliverNotificationTap(intent)
-    }
-
-    private fun requestIgnoreBatteryOptimizations() {
-        if (askedBattery) return
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
-        val pm = getSystemService(PowerManager::class.java) ?: return
-        if (pm.isIgnoringBatteryOptimizations(packageName)) return
-        askedBattery = true
-        try {
-            startActivity(
-                Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
-                    data = Uri.parse("package:$packageName")
-                },
-            )
-        } catch (_: Exception) {
-        }
     }
 
     private fun enterPip(): Boolean {
@@ -385,7 +366,6 @@ class MainActivity : FlutterFragmentActivity() {
     companion object {
         var nativeMethodChannel: MethodChannel? = null
             internal set
-        private var askedBattery = false
         private const val EXTRA_KIND = "kurier.kind"
         private const val EXTRA_CHANNEL = "kurier.channelId"
         private const val EXTRA_MESSAGE = "kurier.messageId"

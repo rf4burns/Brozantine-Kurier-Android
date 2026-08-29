@@ -499,11 +499,6 @@ class SessionController extends ChangeNotifier {
         origin: originOf(host),
         jwt: token ?? existingToken,
       );
-      unawaited(
-        androidSyncKeepAlive(
-          serverName: serverName.isEmpty ? 'Kurier' : serverName,
-        ),
-      );
       final link = takePendingDeepLink();
       if (link?.channelId != null) {
         await jumpToMessage(link!.channelId!, link.messageId ?? 0);
@@ -585,12 +580,14 @@ class SessionController extends ChangeNotifier {
         origin: originOf(host),
         jwt: existingToken,
       );
-      unawaited(
-        androidSyncKeepAlive(
-          serverName: serverName.isEmpty ? 'Kurier' : serverName,
-          voiceChannelName: voiceId == null ? null : channels[voiceId]?.name,
-        ),
-      );
+      if (isNativeMobile && voiceId != null) {
+        unawaited(
+          androidSyncKeepAlive(
+            serverName: serverName.isEmpty ? 'Kurier' : serverName,
+            voiceChannelName: channels[voiceId]?.name,
+          ),
+        );
+      }
       _recoverAttempts = 0;
       _recovering = false;
       if (voiceId != null) {
@@ -2285,7 +2282,7 @@ class SessionController extends ChangeNotifier {
         await _failVoice(e);
       }
     }
-    if (connectedVoiceChannelId != null) {
+    if (isNativeMobile && connectedVoiceChannelId != null) {
       final voiceName = channels[connectedVoiceChannelId!]?.name ?? 'voice';
       await androidSyncKeepAlive(
         serverName: serverName.isEmpty ? 'Kurier' : serverName,
@@ -2689,13 +2686,6 @@ class SessionController extends ChangeNotifier {
     PlatformBridge.setKeepScreenAwake(false);
     PlatformBridge.closeAll();
     unawaited(androidStopVoice());
-    if (!_silentRejoining && phase == SessionPhase.ready) {
-      unawaited(
-        androidSyncKeepAlive(
-          serverName: serverName.isEmpty ? 'Kurier' : serverName,
-        ),
-      );
-    }
     webcam = false;
     sharing = false;
     voiceState = 'idle';

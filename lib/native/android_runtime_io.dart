@@ -55,7 +55,6 @@ bool _firebaseReady = false;
 bool _appLockEnabled = false;
 bool _appForeground = true;
 String _keepAliveServer = 'Kurier';
-bool _keepAlive = false;
 
 @pragma('vm:entry-point')
 Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
@@ -72,12 +71,14 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   await _ensurePushChannels(plugin);
   await _ensureInboxLoaded();
   final data = Map<String, dynamic>.from(message.data);
-  final title =
-      message.notification?.title ?? data['title']?.toString() ?? 'Kurier';
-  final body = message.notification?.body ?? data['body']?.toString() ?? '';
+  final copy = fcmDisplayText(
+    data,
+    notificationTitle: message.notification?.title,
+    notificationBody: message.notification?.body,
+  );
   await _showMessageNotification(
-    title: title,
-    body: body,
+    title: copy.title,
+    body: copy.body,
     data: data,
     plugin: plugin,
   );
@@ -649,21 +650,24 @@ Future<void> androidSyncKeepAlive({
 }) async {
   if (!Platform.isAndroid) return;
   _keepAliveServer = serverName.isEmpty ? 'Kurier' : serverName;
-  _keepAlive = true;
+  final voice = voiceChannelName?.trim() ?? '';
+  if (voice.isEmpty) {
+    await androidStopKeepAlive();
+    return;
+  }
   try {
     await Permission.notification.request();
   } catch (_) {}
   try {
     await kurierNative.invokeMethod('startKeepAlive', {
       'serverName': _keepAliveServer,
-      'voiceChannelName': voiceChannelName,
+      'voiceChannelName': voice,
     });
   } catch (_) {}
 }
 
 Future<void> androidStopKeepAlive() async {
   if (!Platform.isAndroid) return;
-  _keepAlive = false;
   try {
     await kurierNative.invokeMethod('stopKeepAlive');
   } catch (_) {}
@@ -678,9 +682,7 @@ Future<void> androidStartVoice({required String channelName}) async {
 
 Future<void> androidStopVoice() async {
   await androidSyncPip(webcam: false, sharing: false);
-  if (_keepAlive) {
-    await androidSyncKeepAlive(serverName: _keepAliveServer);
-  }
+  await androidStopKeepAlive();
 }
 
 Future<void> androidSyncPip({

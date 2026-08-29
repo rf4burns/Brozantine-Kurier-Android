@@ -36,6 +36,8 @@ Closed-app push needs:
 2. Replace `android/app/google-services.json` with your real file (the committed file is a compile placeholder)
 3. On the Kurier host, set `KURIER_FCM_SERVICE_ACCOUNT` to a service-account JSON path or the JSON itself
 
+Chat alerts while the app is closed go through Firebase Cloud Messaging (Play Services), not a persistent Kurier process. There is no ongoing “Connected” notification. Voice still shows an ongoing notification while you are in a call.
+
 If Firebase is missing, the app still runs. Text, voice, and in-app banners work; killed-process notifications do not.
 
 ## Permissions
