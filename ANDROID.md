@@ -2,6 +2,8 @@
 
 Kurier is a self-hosted messenger. This app is the Android client: add your own host, then chat, DM, and join voice.
 
+The source of truth is [Brozantine-Kurier-Frontend](https://github.com/rf4burns/Brozantine-Kurier-Frontend). This tree is mirrored to [Brozantine-Kurier-Android](https://github.com/rf4burns/Brozantine-Kurier-Android) on every push to `main`. Do not commit in the Android repo.
+
 The app does not ship with a default server. On first launch the host list is empty. Type a hostname, confirm, and optionally set that host as the default for later launches.
 
 ## Requirements

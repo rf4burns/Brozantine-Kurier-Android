@@ -1,0 +1,35 @@
+name: Sync Android repo
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  sync:
+    if: github.repository == 'rf4burns/Brozantine-Kurier-Frontend'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Push main to Brozantine-Kurier-Android
+        env:
+          ANDROID_SYNC_SSH_KEY: ${{ secrets.ANDROID_SYNC_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${ANDROID_SYNC_SSH_KEY:-}" ]; then
+            echo "ANDROID_SYNC_SSH_KEY is not set"
+            exit 1
+          fi
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          umask 077
+          printf '%s\n' "$ANDROID_SYNC_SSH_KEY" > ~/.ssh/id_ed25519
+          ssh-keyscan github.com >> ~/.ssh/known_hosts
+          git push git@github.com:rf4burns/Brozantine-Kurier-Android.git HEAD:refs/heads/main
