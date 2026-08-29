@@ -41,7 +41,8 @@ Brozantine production is [sharkord.brozantine.com](https://sharkord.brozantine.c
 - Message list with jump-to-bottom, older-history load, and unread / mention badges
 - Message search with operators (`from:`, `mentions:`, `in:`, `has:`, `before:`, `after:`, `during:`, `pinned:`)
 - Discord-style emoji picker (Twemoji + custom emoji) and a KLIPY GIF picker with favourites
-- In-app YouTube playback (privacy-enhanced iframe)
+- In-app playback of attached audio and video, plus YouTube (privacy-enhanced iframe)
+- Kurier-styled context menus for messages, members, and channels
 - Per-channel notification overrides, `@everyone` / `@here`, and mention sounds
 - Optimistic image paste-send with a local preview until the server row lands
 - Typing indicators, edit / delete, HTML message rendering, and link / media embeds
@@ -50,6 +51,9 @@ Brozantine production is [sharkord.brozantine.com](https://sharkord.brozantine.c
 
 - Voice channels with webcam and screen share (change source mid-share)
 - Push-to-talk, device picker, input volume, and a pre-join device check
+- Speaker / Bluetooth output switch on the voice stage (tap to toggle, long-press to pick a device)
+- Tap the stage to unlock audio when the browser blocks autoplay
+- Optional keep-screen-on in voice so auto-lock does not cut the microphone
 - Always-on mute / deafen on the account bar, plus server mute and deafen
 - Occupancy timers, voice channel status, connection quality, and ICE / TURN
 - Move members between voice channels (Move Members)
@@ -62,11 +66,13 @@ Brozantine production is [sharkord.brozantine.com](https://sharkord.brozantine.c
 - Hoisted member-list groups, nicknames, pronouns, and status messages
 - Server audit log and privileged backup export
 - User tombstone delete (messages keep the same user id and name)
-- Invites, access bans, custom emoji, and channel / category management
+- Invites, access bans (IP, hardware, and browser device token), custom emoji, and channel / category management
 
 ### Client and ops
 
 - Saved-host server rail (add / switch / remove Kurier hosts, JWT per host)
+- Persistent browser device token (survives reload; clearing site data mints a new one)
+- UI sound library for messages, voice join/leave, mute, camera, and screen share
 - 12 appearance presets plus accent swatches
 - Phone, tablet, and desktop layouts (breakpoints at 768px and 1024px)
 - Resizable channel and member sidebars on desktop; sheets / drawers on smaller screens
@@ -161,11 +167,11 @@ Flutter web app. `flutter pub get` at the repo root, then `flutter run -d chrome
 | --- | --- |
 | `lib/main.dart` | `ProviderScope` + `KurierApp` |
 | `lib/app/` | Theme (12 presets), l10n tables, breakpoints, browser tab branding |
-| `lib/protocol/` | tRPC v11 WebSocket client, HTTP login / upload / info, models, permissions, search operators, voice helpers |
+| `lib/protocol/` | tRPC v11 WebSocket client, HTTP login / upload / info, models, permissions, search operators, voice and audio-output helpers |
 | `lib/session/` | `SessionController` (connection, chat, voice, settings), saved-host store, message history |
 | `lib/core/` | Emoji catalog / codec, GIF search, quick reactions |
 | `lib/ui/` | Login, home shell (phone / tablet / desktop), chat, voice stage, settings, pickers |
-| `web/` | `index.html`, PWA manifest, `mediasoup_bridge.js` (loads `mediasoup-client`) |
+| `web/` | `index.html`, PWA manifest, `mediasoup_bridge.js` (loads `mediasoup-client`), `sounds.js` |
 | `deploy/` | Production Caddyfile |
 | `tool/` | Release web build script |
 | `test/` | Widget, protocol, GIF, and branding tests |
