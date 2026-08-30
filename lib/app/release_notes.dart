@@ -15,6 +15,13 @@ class ThirdPartyProgram {
 /// Latest first. English only — per-build copy is not sent through l10n.
 const releaseNotes = <ReleaseNote>[
   ReleaseNote(
+    version: '1.0.5',
+    notes: [
+      'Build 1.0.5.',
+    ],
+  ),
+
+  ReleaseNote(
     version: '1.0.4',
     notes: [
       'Build 1.0.4.',

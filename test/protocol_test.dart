@@ -2895,4 +2895,19 @@ void main() {
       expect(store.notifyReplies, isTrue);
     });
   });
+
+  group('channelNotifyLevel', () {
+    test('uses the channel override when set', () {
+      final s = SessionController();
+      s.notificationOverrides[10] = 'nothing';
+      expect(s.channelNotifyLevel(10), 'nothing');
+      s.notificationOverrides[10] = 'all';
+      expect(s.channelNotifyLevel(10), 'all');
+    });
+
+    test('falls back to global prefs when the channel has no override', () {
+      final s = SessionController();
+      expect(s.channelNotifyLevel(10), 'mentions');
+    });
+  });
 }

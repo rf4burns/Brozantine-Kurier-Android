@@ -2202,7 +2202,19 @@ class SessionController extends ChangeNotifier {
   Future<void> deleteCategory(int id) =>
       trpc!.mutate('categories.delete', {'categoryId': id});
 
+  static const _notifyLevels = {'all', 'mentions', 'nothing'};
+
+  String channelNotifyLevel(int channelId) {
+    final level = notificationOverrides[channelId];
+    if (level != null && _notifyLevels.contains(level)) return level;
+    if (store.notifyAll) return 'all';
+    if (store.notifyMentions) return 'mentions';
+    return 'nothing';
+  }
+
   Future<void> setNotificationOverride(int channelId, String level) async {
+    notificationOverrides[channelId] = level;
+    notifyListeners();
     await trpc!.mutate('channels.setNotificationOverride', {
       'channelId': channelId,
       'level': level,

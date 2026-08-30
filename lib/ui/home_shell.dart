@@ -901,6 +901,7 @@ class ChannelSidebar extends StatelessWidget {
     L10n l,
   ) {
     final unread = s.readStates[c.id] ?? 0;
+    final notifyLevel = s.channelNotifyLevel(c.id);
     return ContextRegion(
       onTap: (_) => _pick(s, c.id),
       actions: () => [
@@ -914,16 +915,19 @@ class ChannelSidebar extends StatelessWidget {
           icon: Icons.notifications_outlined,
           label: l('notifyAll'),
           dividerBefore: s.can(Permission.manageChannels),
+          selected: notifyLevel == 'all',
           onTap: () => s.setNotificationOverride(c.id, 'all'),
         ),
         MenuAction(
           icon: Icons.alternate_email,
           label: l('notifyMentions'),
+          selected: notifyLevel == 'mentions',
           onTap: () => s.setNotificationOverride(c.id, 'mentions'),
         ),
         MenuAction(
           icon: Icons.notifications_off_outlined,
           label: l('notifyMute'),
+          selected: notifyLevel == 'nothing',
           onTap: () => s.setNotificationOverride(c.id, 'nothing'),
         ),
         if (s.can(Permission.manageChannels))

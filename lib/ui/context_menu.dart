@@ -17,6 +17,7 @@ class MenuAction {
     this.enabled = true,
     this.dividerBefore = false,
     this.submenu = false,
+    this.selected = false,
   });
 
   final String label;
@@ -26,6 +27,7 @@ class MenuAction {
   final bool enabled;
   final bool dividerBefore;
   final bool submenu;
+  final bool selected;
 }
 
 typedef ContextMenuHeaderBuilder = Widget Function(
@@ -307,7 +309,14 @@ class _MenuRowState extends State<_MenuRow> {
                       style: TextStyle(color: color, fontSize: 14),
                     ),
                   ),
-                  if (widget.action.submenu)
+                  if (widget.action.selected)
+                    Icon(
+                      Icons.check,
+                      size: 18,
+                      color: context.k.accent,
+                      key: const ValueKey('menu-selected'),
+                    )
+                  else if (widget.action.submenu)
                     Icon(Icons.chevron_right, size: 18, color: p.faint),
                 ],
               ),

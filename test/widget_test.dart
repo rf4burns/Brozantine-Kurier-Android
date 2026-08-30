@@ -3943,6 +3943,36 @@ void main() {
     expect(find.text('Delete'), findsNothing);
   });
 
+  Finder _notifyRowCheck(String label) {
+    return find.descendant(
+      of: find.ancestor(
+        of: find.text(label),
+        matching: find.byType(InkWell),
+      ),
+      matching: find.byKey(const ValueKey('menu-selected')),
+    );
+  }
+
+  testWidgets('channel context menu ticks the current notification level', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(900, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final s = _readySession(selectedChannelId: 10);
+    s.notificationOverrides[10] = 'nothing';
+    await tester.pumpWidget(_app(s));
+    await tester.pump();
+    await tester.longPress(find.text('general').first);
+    await tester.pumpAndSettle();
+
+    expect(_notifyRowCheck('Mute'), findsOneWidget);
+    expect(_notifyRowCheck('All messages'), findsNothing);
+    expect(_notifyRowCheck('Mentions only'), findsNothing);
+  });
+
   test('web client defaults automatic gain control off', () {
     expect(HostsStore().autoGainControl, isFalse);
     expect(HostsStore().echoCancellation, isTrue);
