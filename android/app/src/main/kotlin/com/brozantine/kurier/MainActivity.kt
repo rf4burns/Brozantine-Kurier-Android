@@ -329,8 +329,10 @@ class MainActivity : FlutterFragmentActivity() {
         }
         val markReadIntent = Intent(this, KurierNotificationActionReceiver::class.java).apply {
             action = KurierNotificationActionReceiver.ACTION_MARK_READ
+            setPackage(packageName)
             putExtra(KurierNotificationActionReceiver.EXTRA_KIND, kind)
             putExtra(KurierNotificationActionReceiver.EXTRA_CHANNELS, channelIds)
+            putExtra(KurierNotificationActionReceiver.EXTRA_NOTIFICATION_ID, id)
         }
         val markReadPending = PendingIntent.getBroadcast(
             this,

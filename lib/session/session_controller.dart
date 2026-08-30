@@ -211,14 +211,14 @@ class SessionController extends ChangeNotifier {
       takePendingDeepLink();
       unawaited(jumpToMessage(link.channelId!, link.messageId ?? 0));
     };
-    onAndroidMarkRead = (channelId) {
+    onAndroidMarkRead = (channelId) async {
       readStates[channelId] = 0;
+      final dm = dms.where((d) => d.channelId == channelId).firstOrNull;
+      if (dm != null) dm.unreadCount = 0;
       notifyListeners();
-      unawaited(() async {
-        try {
-          await trpc?.mutate('channels.markAsRead', {'channelId': channelId});
-        } catch (_) {}
-      }());
+      try {
+        await trpc?.mutate('channels.markAsRead', {'channelId': channelId});
+      } catch (_) {}
     };
     await _ensureDefaultHost();
     if (isNativeMobile && activeHost == null) {

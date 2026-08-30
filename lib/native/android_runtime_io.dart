@@ -37,6 +37,7 @@ const _originKey = 'kurier.origin';
 const _lockKey = 'kurier.appLock';
 const _fcmKey = 'kurier.fcmToken';
 const _inboxKey = 'kurier.pushInbox.v1';
+const _pendingMarkReadKey = 'kurier.pendingMarkRead';
 
 final _inbox = PushInbox();
 bool _inboxLoaded = false;
@@ -46,7 +47,7 @@ final _auth = LocalAuthentication();
 
 void Function(String action)? onVoiceNotificationAction;
 void Function(PendingDeepLink link)? onAndroidNotificationOpened;
-void Function(int channelId)? onAndroidMarkRead;
+Future<void> Function(int channelId)? onAndroidMarkRead;
 
 PendingShare? _pendingShare;
 PendingDeepLink? _pendingDeepLink;
@@ -104,7 +105,7 @@ Future<void> _persistInbox() async {
 @pragma('vm:entry-point')
 void notificationTapBackground(NotificationResponse response) {
   WidgetsFlutterBinding.ensureInitialized();
-  _onNotificationResponse(response);
+  unawaited(_onNotificationResponse(response));
 }
 
 const _messageActions = <AndroidNotificationAction>[
@@ -190,6 +191,7 @@ Future<void> _postKind(
   final payload = jsonEncode({
     ...data,
     'kind': kind.wire,
+    'channelIds': _inbox.channelIds(kind).toList(),
     if (latest?.channelId != null) 'channelId': latest!.channelId,
     if (latest?.messageId != null) 'messageId': latest!.messageId,
   });
@@ -354,7 +356,7 @@ Future<void> initAndroidRuntime() async {
       return;
     }
     if (call.method == 'markRead') {
-      unawaited(_onNativeMarkRead(call.arguments));
+      await _onNativeMarkRead(call.arguments);
     }
   });
   _shareSub?.cancel();
@@ -369,6 +371,7 @@ Future<void> initAndroidRuntime() async {
     final initialMsg = await FirebaseMessaging.instance.getInitialMessage();
     if (initialMsg != null) _onRemoteTap(initialMsg);
   }
+  await _flushPendingMarkRead();
 }
 
 void _onShare(List<SharedMediaFile> files) {
@@ -408,21 +411,13 @@ Future<void> _onNativeMarkRead(dynamic arguments) async {
   final data = arguments is Map
       ? Map<String, dynamic>.from(arguments)
       : <String, dynamic>{};
-  final extraIds = <int>{};
-  final rawIds = data['channelIds'];
-  if (rawIds is List) {
-    for (final value in rawIds) {
-      final id = value is int ? value : int.tryParse('$value');
-      if (id != null && id != 0) extraIds.add(id);
-    }
-  }
   await _markKindRead(
     PushKind.parse(data['kind']?.toString()),
-    extraChannelIds: extraIds,
+    extraChannelIds: _channelIdsFrom(data),
   );
 }
 
-void _onNotificationResponse(NotificationResponse response) {
+Future<void> _onNotificationResponse(NotificationResponse response) async {
   final payload = response.payload;
   Map<String, dynamic> data = {};
   if (payload != null && payload.isNotEmpty) {
@@ -431,15 +426,18 @@ void _onNotificationResponse(NotificationResponse response) {
     } catch (_) {}
   }
   if (response.actionId == 'mark_read') {
-    unawaited(_markKindRead(PushKind.parse(data['kind']?.toString())));
+    await _markKindRead(
+      PushKind.parse(data['kind']?.toString()),
+      extraChannelIds: _channelIdsFrom(data),
+    );
     return;
   }
   if (response.actionId == 'reply') {
-    unawaited(_quickReply(data, response.input));
+    await _quickReply(data, response.input);
     return;
   }
   if (data['kind'] != null) {
-    unawaited(_cancelKind(PushKind.parse(data['kind']?.toString())));
+    await _cancelKind(PushKind.parse(data['kind']?.toString()));
   }
   _pendingDeepLink = PendingDeepLink(
     channelId: int.tryParse('${data['channelId'] ?? ''}'),
@@ -449,20 +447,59 @@ void _onNotificationResponse(NotificationResponse response) {
   if (link != null) onAndroidNotificationOpened?.call(link);
 }
 
+Set<int> _channelIdsFrom(Map<String, dynamic> data) {
+  final ids = <int>{};
+  final raw = data['channelIds'] ?? data['chatChannelIds'];
+  if (raw is List) {
+    for (final value in raw) {
+      final id = value is int ? value : int.tryParse('$value');
+      if (id != null && id != 0) ids.add(id);
+    }
+  }
+  final single = int.tryParse('${data['channelId'] ?? ''}');
+  if (single != null && single != 0) ids.add(single);
+  return ids;
+}
+
+Future<void> _reloadInbox() async {
+  _inboxLoaded = false;
+  await _ensureInboxLoaded();
+}
+
+Future<void> _flushPendingMarkRead() async {
+  try {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_pendingMarkReadKey);
+    if (raw == null || raw.isEmpty) return;
+    await prefs.remove(_pendingMarkReadKey);
+    final decoded = jsonDecode(raw);
+    if (decoded is! List) return;
+    for (final item in decoded) {
+      if (item is! Map) continue;
+      final data = Map<String, dynamic>.from(item);
+      await _markKindRead(
+        PushKind.parse(data['kind']?.toString()),
+        extraChannelIds: _channelIdsFrom(data),
+      );
+    }
+  } catch (_) {}
+}
+
 Future<void> _markKindRead(
   PushKind kind, {
   Set<int> extraChannelIds = const {},
 }) async {
-  await _ensureInboxLoaded();
+  await _reloadInbox();
   final channelIds = {..._inbox.channelIds(kind), ...extraChannelIds};
   await _cancelKind(kind);
-  for (final id in channelIds) {
-    if (onAndroidMarkRead != null) {
-      onAndroidMarkRead!(id);
-    } else {
-      unawaited(_markRead({'channelId': id}));
+  final callback = onAndroidMarkRead;
+  if (callback != null) {
+    for (final id in channelIds) {
+      await callback(id);
     }
+    return;
   }
+  await _markReadChannels(channelIds);
 }
 
 Future<void> androidConsumePendingShare(dynamic session) async {
@@ -483,18 +520,26 @@ Future<void> androidConsumePendingShare(dynamic session) async {
   if (files.isNotEmpty) await session.sendFiles(files);
 }
 
-Future<void> _markRead(Map<String, dynamic> data) async {
+Future<void> _markReadChannels(Iterable<int> channelIds) async {
+  final ids = channelIds.where((id) => id != 0).toSet();
+  if (ids.isEmpty) return;
   final origin = await _secure.read(key: _originKey);
   final jwt = await _secure.read(key: _jwtKey);
-  final channelId = int.tryParse('${data['channelId'] ?? ''}');
-  if (origin == null || jwt == null || channelId == null) return;
+  if (origin == null || jwt == null) return;
   final trpc = TrpcClient(
     url: trpcWsUrl(origin),
     connectionParams: () => {'token': jwt, 'deviceToken': ''},
   );
   try {
     await trpc.connect();
-    await trpc.mutate('channels.markAsRead', {'channelId': channelId});
+    try {
+      await trpc.query('others.handshake');
+    } catch (_) {}
+    for (final id in ids) {
+      try {
+        await trpc.mutate('channels.markAsRead', {'channelId': id});
+      } catch (_) {}
+    }
   } catch (_) {
   } finally {
     await trpc.close(silent: true);

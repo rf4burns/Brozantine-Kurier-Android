@@ -77,6 +77,9 @@
         <receiver
             android:name=".KurierNotificationActionReceiver"
             android:exported="false" />
+        <receiver
+            android:name="com.dexterous.flutterlocalnotifications.ActionBroadcastReceiver"
+            android:exported="false" />
         <service
             android:name="com.pravera.flutter_foreground_task.service.ForegroundService"
             android:foregroundServiceType="dataSync|microphone|mediaPlayback"
