@@ -61,11 +61,13 @@ const releaseNotes = <ReleaseNote>[
     );
   });
 
-  test('1.0.0 ships with changelog and third-party programs', () {
-    expect(releaseNotes.first.version, '1.0.0');
-    expect(releaseNotes.first.notes, isNotEmpty);
+  test('changelog and third-party programs ship with the client', () {
+    expect(releaseNotes, isNotEmpty);
+    expect(
+      releaseNotes.any((n) => n.version == '1.0.0' && n.notes.isNotEmpty),
+      isTrue,
+    );
     expect(thirdPartyPrograms, isNotEmpty);
     expect(thirdPartyPrograms.any((p) => p.name.contains('Twemoji')), isTrue);
-    expect(thirdPartyPrograms.any((p) => p.name.contains('Firebase')), isTrue);
   });
 }

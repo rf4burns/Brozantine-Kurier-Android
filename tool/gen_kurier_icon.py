@@ -19,6 +19,7 @@ NAVY = (11, 31, 58, 255)  # #0B1F3A
 CHEVRON = (59, 130, 246, 255)  # #3B82F6
 LIGHT = (147, 197, 253, 255)  # #93C5FD
 WHITE = (255, 255, 255, 255)
+CLEAR = (0, 0, 0, 0)
 
 
 def _blend(dst: list[int], x: int, y: int, w: int, rgba: tuple[int, int, int, int], cover: float) -> None:
@@ -33,7 +34,26 @@ def _blend(dst: list[int], x: int, y: int, w: int, rgba: tuple[int, int, int, in
     dst[i + 3] = min(255, int(dst[i + 3] * inv + rgba[3] * a))
 
 
-def _fill_poly(px: list[int], w: int, pts: list[tuple[float, float]], color: tuple[int, int, int, int]) -> None:
+def _overwrite(dst: list[int], x: int, y: int, w: int, rgba: tuple[int, int, int, int], cover: float) -> None:
+    if cover <= 0 or x < 0 or y < 0 or x >= w or y >= w:
+        return
+    i = (y * w + x) * 4
+    t = min(1.0, cover)
+    inv = 1.0 - t
+    dst[i] = int(dst[i] * inv + rgba[0] * t)
+    dst[i + 1] = int(dst[i + 1] * inv + rgba[1] * t)
+    dst[i + 2] = int(dst[i + 2] * inv + rgba[2] * t)
+    dst[i + 3] = int(dst[i + 3] * inv + rgba[3] * t)
+
+
+def _fill_poly(
+    px: list[int],
+    w: int,
+    pts: list[tuple[float, float]],
+    color: tuple[int, int, int, int],
+    *,
+    put=_blend,
+) -> None:
     if len(pts) < 3:
         return
     min_y = max(0, int(min(p[1] for p in pts)) - 1)
@@ -60,7 +80,7 @@ def _fill_poly(px: list[int], w: int, pts: list[tuple[float, float]], color: tup
                     cover = x + 1 - x0
                 elif x + 1 > x1:
                     cover = x1 - x
-                _blend(px, x, y, w, color, cover)
+                put(px, x, y, w, color, cover)
 
 
 def _fill_circle(px: list[int], w: int, cx: float, cy: float, r: float, color: tuple[int, int, int, int]) -> None:
@@ -115,6 +135,43 @@ def render_mark(size: int, *, padded: bool) -> bytes:
     return _png(size, size, px)
 
 
+def render_stat_icon(size: int) -> bytes:
+    """White chevron silhouette on a transparent field for Android smallIcon.
+
+    Android tints every opaque pixel, so a navy square becomes a white square.
+    Extra inset keeps the glyph in the 16dp optical square of a 24dp canvas.
+    """
+    px = [0] * (size * size * 4)
+    s = float(size)
+    inset = s * (4.0 / 24.0)
+    left = inset
+    right = s - inset
+    top = inset
+    bot = s - inset
+    mid_y = s * 0.5
+    thickness = s * 0.16
+    outer = [
+        (left, top),
+        (left + thickness * 1.15, top),
+        (right - thickness * 0.2, mid_y),
+        (left + thickness * 1.15, bot),
+        (left, bot),
+        (right - thickness * 1.45, mid_y),
+    ]
+    inner = [
+        (left + thickness * 0.55, top + thickness * 0.85),
+        (left + thickness * 1.55, top + thickness * 0.85),
+        (right - thickness * 1.05, mid_y),
+        (left + thickness * 1.55, bot - thickness * 0.85),
+        (left + thickness * 0.55, bot - thickness * 0.85),
+        (right - thickness * 2.15, mid_y),
+    ]
+    _fill_poly(px, size, outer, WHITE)
+    _fill_poly(px, size, inner, CLEAR, put=_overwrite)
+    _fill_circle(px, size, left + thickness * 0.95, mid_y, s * 0.07, WHITE)
+    return _png(size, size, px)
+
+
 def _png(w: int, h: int, rgba: list[int]) -> bytes:
     raw = bytearray()
     for y in range(h):
@@ -147,6 +204,18 @@ def write(path: Path, data: bytes) -> None:
     print(f"wrote {path} ({len(data)} bytes)")
 
 
+def write_stat_icons() -> None:
+    res = ROOT / "android" / "app" / "src" / "main" / "res"
+    for name, size in (
+        ("mdpi", 24),
+        ("hdpi", 36),
+        ("xhdpi", 48),
+        ("xxhdpi", 72),
+        ("xxxhdpi", 96),
+    ):
+        write(res / f"drawable-{name}" / "ic_stat_kurier.png", render_stat_icon(size))
+
+
 def main() -> None:
     hd = render_mark(512, padded=False)
     write(ROOT / "web" / "icons" / "Icon-512.png", hd)
@@ -176,11 +245,7 @@ def main() -> None:
     for name, size in fg.items():
         write(res / f"mipmap-{name}" / "ic_launcher_foreground.png", render_mark(size, padded=True))
         write(res / f"drawable-{name}" / "ic_launcher_foreground.png", render_mark(size, padded=True))
-    write(res / "drawable-mdpi" / "ic_stat_kurier.png", render_mark(24, padded=False))
-    write(res / "drawable-hdpi" / "ic_stat_kurier.png", render_mark(36, padded=False))
-    write(res / "drawable-xhdpi" / "ic_stat_kurier.png", render_mark(48, padded=False))
-    write(res / "drawable-xxhdpi" / "ic_stat_kurier.png", render_mark(72, padded=False))
-    write(res / "drawable-xxxhdpi" / "ic_stat_kurier.png", render_mark(96, padded=False))
+    write_stat_icons()
     write(res / "drawable" / "splash_logo.png", render_mark(288, padded=True))
 
 

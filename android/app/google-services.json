@@ -1,13 +1,13 @@
 {
   "project_info": {
-    "project_number": "0",
-    "project_id": "kurier-placeholder",
-    "storage_bucket": "kurier-placeholder.appspot.com"
+    "project_number": "757739559612",
+    "project_id": "kurier-notifications",
+    "storage_bucket": "kurier-notifications.firebasestorage.app"
   },
   "client": [
     {
       "client_info": {
-        "mobilesdk_app_id": "1:0:android:0000000000000000",
+        "mobilesdk_app_id": "1:757739559612:android:acaf65efcc285beeaaceb9",
         "android_client_info": {
           "package_name": "com.brozantine.kurier"
         }
@@ -15,7 +15,7 @@
       "oauth_client": [],
       "api_key": [
         {
-          "current_key": "placeholder"
+          "current_key": "AIzaSyBj3FezLCprPUt1YL2wId0Zv2lAludfF6g"
         }
       ],
       "services": {

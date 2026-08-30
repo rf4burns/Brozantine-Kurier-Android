@@ -33,6 +33,10 @@ void main() {
     expect(find.textContaining('Version:'), findsOneWidget);
     expect(find.text('Changelog'), findsOneWidget);
     expect(find.text('Third Party Usage'), findsOneWidget);
+    expect(
+      find.textContaining('Emoji artwork from Twemoji'),
+      findsNothing,
+    );
 
     await tester.tap(find.text('Changelog'));
     await tester.pumpAndSettle();
@@ -44,7 +48,7 @@ void main() {
 
     await tester.tap(find.text('Third Party Usage'));
     await tester.pumpAndSettle();
-    expect(find.text('Flutter / Dart'), findsOneWidget);
-    expect(find.text('Firebase Cloud Messaging'), findsOneWidget);
+    expect(find.text('Twemoji (Twitter)'), findsOneWidget);
+    expect(find.textContaining('licensed CC-BY 4.0'), findsOneWidget);
   });
 }

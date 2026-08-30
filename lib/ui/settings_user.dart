@@ -1514,7 +1514,6 @@ class _AboutSettingsTabState extends State<AboutSettingsTab> {
             ),
           ],
         ),
-        Text(l('twemojiCredit'), style: TextStyle(color: context.p.muted)),
         Text(l('logs'), style: TextStyle(color: context.p.faint)),
         for (final line in widget.s.logs.reversed.take(30))
           Text(line, style: TextStyle(color: context.p.muted, fontSize: 11)),
