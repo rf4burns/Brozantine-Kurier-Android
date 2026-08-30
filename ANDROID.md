@@ -22,10 +22,10 @@ flutter test
 flutter run
 ```
 
-Release (bumps `x.y.z` from the previous pubspec version, then builds):
+Release (bumps `x.y.z` from the previous pubspec version, then builds). `-Notes` is required: client-facing changelog bullets, separated with `|`. Those notes land in About → Changelog. A placeholder like `Build 1.0.6.` is rejected:
 
 ```powershell
-powershell -File tool/build_android.ps1
+powershell -File tool/build_android.ps1 -Notes "Fixed voice reconnect. | Improved notification banners."
 ```
 
 Each of `x`, `y`, and `z` is a single digit 0–9. A new build increments `z`; at 9 it wraps and increments `y`, then `x`. Android `versionCode` (`+n` in pubspec) still increases every release but is not shown in About.
@@ -34,12 +34,6 @@ The first `1.0.0` APK, or a rebuild of the same version:
 
 ```powershell
 powershell -File tool/build_android.ps1 -NoBump
-```
-
-Pass user-facing changelog bullets with `-Notes` (separate multiple bullets with `|`):
-
-```powershell
-powershell -File tool/build_android.ps1 -Notes "Fixed voice reconnect. | Improved notification banners."
 ```
 
 Sideloaded installs of an older APK with a higher `versionCode` (for example `1.0.3+4`) need uninstall before installing `1.0.0+1`.

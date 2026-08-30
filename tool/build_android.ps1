@@ -7,6 +7,10 @@ param(
 $ErrorActionPreference = "Stop"
 Set-Location (Split-Path -Parent $PSScriptRoot)
 
+if (-not $NoBump -and -not $Notes.Trim()) {
+  throw "Release bump requires -Notes with client-facing changelog bullets (separate with |)."
+}
+
 $bumpArgs = @()
 if ($NoBump) { $bumpArgs += "--no-bump" }
 if ($Notes) {

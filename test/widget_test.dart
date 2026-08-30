@@ -3369,6 +3369,77 @@ void main() {
     expect(find.text('Manage roles'), findsNothing);
   });
 
+  testWidgets('phone profile sheet closes from the close button', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final s = _readySession();
+    s.showProfile(s.users[2]!);
+    await tester.pumpWidget(_app(s));
+    await tester.pump();
+
+    expect(s.profileUser?.id, 2);
+    expect(find.byKey(const ValueKey('profile-close')), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('profile-close')));
+    await tester.pumpAndSettle();
+
+    expect(s.profileUser, isNull);
+    expect(find.byKey(const ValueKey('profile-close')), findsNothing);
+  });
+
+  testWidgets('phone profile sheet closes on system back', (tester) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final s = _readySession();
+    s.showProfile(s.users[2]!);
+    await tester.pumpWidget(_app(s));
+    await tester.pump();
+    expect(s.profileUser?.id, 2);
+
+    await tester.binding.handlePopRoute();
+    await tester.pumpAndSettle();
+
+    expect(s.profileUser, isNull);
+    expect(find.byKey(const ValueKey('profile-close')), findsNothing);
+  });
+
+  testWidgets('phone profile sheet closes when tapping the barrier', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final s = _readySession();
+    s.showProfile(s.users[2]!);
+    await tester.pumpWidget(_app(s));
+    await tester.pump();
+    expect(s.profileUser?.id, 2);
+
+    await tester.tapAt(const Offset(195, 20));
+    await tester.pumpAndSettle();
+
+    expect(s.profileUser, isNull);
+  });
+
+  test('fatal disconnect drops an open profile', () async {
+    final s = _readySession();
+    s.showProfile(s.users[2]!);
+    expect(s.profileUser?.id, 2);
+    await s.handleGatewayClosed(40000, 'unauthorized');
+    expect(s.profileUser, isNull);
+    expect(s.overlay, isNull);
+  });
+
   test('formatMemberSince uses a short month name', () {
     expect(
       formatMemberSince(DateTime(2026, 8, 23).millisecondsSinceEpoch),
@@ -3945,10 +4016,7 @@ void main() {
 
   Finder _notifyRowCheck(String label) {
     return find.descendant(
-      of: find.ancestor(
-        of: find.text(label),
-        matching: find.byType(InkWell),
-      ),
+      of: find.ancestor(of: find.text(label), matching: find.byType(InkWell)),
       matching: find.byKey(const ValueKey('menu-selected')),
     );
   }

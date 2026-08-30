@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:kurier_web/app/app_version.dart';
 import 'package:kurier_web/app/release_notes.dart';
@@ -59,14 +61,38 @@ const releaseNotes = <ReleaseNote>[
       insertReleaseNoteBlock(next, version: '1.0.1', notes: ['dup']),
       next,
     );
+    expect(
+      () => insertReleaseNoteBlock(src, version: '1.0.1', notes: const []),
+      throwsArgumentError,
+    );
+    expect(
+      () => insertReleaseNoteBlock(
+        src,
+        version: '1.0.1',
+        notes: const ['Build 1.0.1.'],
+      ),
+      throwsArgumentError,
+    );
   });
 
   test('changelog and third-party programs ship with the client', () {
+    final pubspec = File('pubspec.yaml').readAsStringSync();
+    final current = parsePubspecVersion(pubspec);
     expect(releaseNotes, isNotEmpty);
     expect(
-      releaseNotes.any((n) => n.version == '1.0.0' && n.notes.isNotEmpty),
-      isTrue,
+      releaseNotes.first.version,
+      current.name,
+      reason: 'About changelog must start with the pubspec version',
     );
+    final seen = <String>{};
+    for (final entry in releaseNotes) {
+      expect(seen.add(entry.version), isTrue, reason: 'duplicate ${entry.version}');
+      expect(
+        clientFacingReleaseNotes(entry.notes),
+        isNotEmpty,
+        reason: '${entry.version} needs notes a client would care about',
+      );
+    }
     expect(thirdPartyPrograms, isNotEmpty);
     expect(thirdPartyPrograms.any((p) => p.name.contains('Twemoji')), isTrue);
   });

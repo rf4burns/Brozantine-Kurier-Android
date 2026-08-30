@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../app/breakpoints.dart';
 import '../app/l10n.dart';
@@ -167,40 +168,43 @@ class _DesktopProfileCard extends StatelessWidget {
     );
 
     return Positioned.fill(
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onTap: session.closeOverlay,
-        child: Stack(
-          children: [
-            Positioned(
-              left: pos.dx,
-              top: pos.dy,
-              child: GestureDetector(
-                onTap: () {},
-                child: ConstrainedBox(
-                  constraints: BoxConstraints(
-                    maxWidth: _width,
-                    maxHeight: maxH,
-                  ),
-                  child: Material(
-                    key: const ValueKey('profile-popout'),
-                    color: context.p.sidebar,
-                    elevation: 16,
-                    shadowColor: Colors.black54,
-                    borderRadius: BorderRadius.circular(12),
-                    clipBehavior: Clip.antiAlias,
-                    child: ListenableBuilder(
-                      listenable: session,
-                      builder: (context, _) => _DesktopPopoutBody(
-                        session: session,
-                        user: session.users[user.id] ?? user,
+      child: _ProfileDismissScope(
+        session: session,
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: session.closeOverlay,
+          child: Stack(
+            children: [
+              Positioned(
+                left: pos.dx,
+                top: pos.dy,
+                child: GestureDetector(
+                  onTap: () {},
+                  child: ConstrainedBox(
+                    constraints: BoxConstraints(
+                      maxWidth: _width,
+                      maxHeight: maxH,
+                    ),
+                    child: Material(
+                      key: const ValueKey('profile-popout'),
+                      color: context.p.sidebar,
+                      elevation: 16,
+                      shadowColor: Colors.black54,
+                      borderRadius: BorderRadius.circular(12),
+                      clipBehavior: Clip.antiAlias,
+                      child: ListenableBuilder(
+                        listenable: session,
+                        builder: (context, _) => _DesktopPopoutBody(
+                          session: session,
+                          user: session.users[user.id] ?? user,
+                        ),
                       ),
                     ),
                   ),
                 ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
@@ -428,6 +432,29 @@ class _DesktopPopoutBody extends StatelessWidget {
   }
 }
 
+class _ProfileDismissScope extends StatelessWidget {
+  const _ProfileDismissScope({required this.session, required this.child});
+  final SessionController session;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) session.closeOverlay();
+      },
+      child: CallbackShortcuts(
+        bindings: {
+          const SingleActivator(LogicalKeyboardKey.escape):
+              session.closeOverlay,
+        },
+        child: Focus(autofocus: true, child: child),
+      ),
+    );
+  }
+}
+
 class _MobileProfileSheet extends StatelessWidget {
   const _MobileProfileSheet({required this.session, required this.user});
   final SessionController session;
@@ -435,27 +462,39 @@ class _MobileProfileSheet extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final size = MediaQuery.sizeOf(context);
+    final pad = MediaQuery.paddingOf(context);
+    final reservedTop = pad.top + 48;
+    final heightFactor = ((size.height - reservedTop) / size.height).clamp(
+      0.5,
+      0.92,
+    );
     return Positioned.fill(
-      child: GestureDetector(
-        onTap: session.closeOverlay,
-        child: ColoredBox(
-          color: Colors.black54,
-          child: Align(
-            alignment: Alignment.bottomCenter,
-            child: GestureDetector(
-              onTap: () {},
-              child: FractionallySizedBox(
-                heightFactor: 0.92,
-                widthFactor: 1,
-                child: Material(
-                  color: context.p.sidebar,
-                  borderRadius: const BorderRadius.vertical(
-                    top: Radius.circular(12),
-                  ),
-                  clipBehavior: Clip.antiAlias,
-                  child: SafeArea(
-                    top: false,
-                    child: _MobileProfileBody(session: session, user: user),
+      child: _ProfileDismissScope(
+        session: session,
+        child: GestureDetector(
+          key: const ValueKey('profile-barrier'),
+          behavior: HitTestBehavior.opaque,
+          onTap: session.closeOverlay,
+          child: ColoredBox(
+            color: Colors.black54,
+            child: Align(
+              alignment: Alignment.bottomCenter,
+              child: GestureDetector(
+                onTap: () {},
+                child: FractionallySizedBox(
+                  heightFactor: heightFactor,
+                  widthFactor: 1,
+                  child: Material(
+                    color: context.p.sidebar,
+                    borderRadius: const BorderRadius.vertical(
+                      top: Radius.circular(12),
+                    ),
+                    clipBehavior: Clip.antiAlias,
+                    child: SafeArea(
+                      top: false,
+                      child: _MobileProfileBody(session: session, user: user),
+                    ),
                   ),
                 ),
               ),
@@ -504,6 +543,7 @@ class _MobileProfileBody extends StatelessWidget {
                       session: s,
                       user: live,
                       showOverflow: a.hasOverflowActions,
+                      onClose: s.closeOverlay,
                       onOverflow: () =>
                           showMemberOverflowSheet(context, s, live),
                     ),
@@ -662,12 +702,14 @@ class _Header extends StatelessWidget {
     required this.session,
     required this.user,
     required this.showOverflow,
+    required this.onClose,
     required this.onOverflow,
   });
 
   final SessionController session;
   final KurierUser user;
   final bool showOverflow;
+  final VoidCallback onClose;
   final VoidCallback onOverflow;
 
   @override
@@ -678,87 +720,106 @@ class _Header extends StatelessWidget {
     const avatar = 80.0;
     const overlap = 28.0;
     final bannerUrl = user.banner != null ? s.fileUrl(user.banner!) : '';
-    return SizedBox(
-      height: bannerH + avatar - overlap + 12,
-      child: Stack(
-        clipBehavior: Clip.none,
-        children: [
-          Positioned(
-            top: 0,
-            left: 0,
-            right: 0,
-            height: bannerH,
-            child: ColoredBox(
-              color: profileBannerColor(user.profileColor),
-              child: bannerUrl.isNotEmpty
-                  ? Image.network(
-                      bannerUrl,
-                      fit: BoxFit.cover,
-                      width: double.infinity,
-                      gaplessPlayback: true,
-                      errorBuilder: (_, _, _) => const SizedBox.expand(),
-                    )
-                  : null,
+    return GestureDetector(
+      onVerticalDragEnd: (d) {
+        if ((d.primaryVelocity ?? 0) > 280) onClose();
+      },
+      child: SizedBox(
+        height: bannerH + avatar - overlap + 12,
+        child: Stack(
+          clipBehavior: Clip.none,
+          children: [
+            Positioned(
+              top: 0,
+              left: 0,
+              right: 0,
+              height: bannerH,
+              child: ColoredBox(
+                color: profileBannerColor(user.profileColor),
+                child: bannerUrl.isNotEmpty
+                    ? Image.network(
+                        bannerUrl,
+                        fit: BoxFit.cover,
+                        width: double.infinity,
+                        gaplessPlayback: true,
+                        errorBuilder: (_, _, _) => const SizedBox.expand(),
+                      )
+                    : null,
+              ),
             ),
-          ),
-          Positioned(
-            top: 6,
-            left: 0,
-            right: 0,
-            child: Center(
-              child: Container(
-                width: 36,
-                height: 4,
-                decoration: BoxDecoration(
-                  color: Colors.white38,
-                  borderRadius: BorderRadius.circular(2),
+            Positioned(
+              top: 6,
+              left: 0,
+              right: 0,
+              child: Center(
+                child: Container(
+                  width: 36,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: Colors.white38,
+                    borderRadius: BorderRadius.circular(2),
+                  ),
                 ),
               ),
             ),
-          ),
-          if (showOverflow)
             Positioned(
               top: 8,
-              right: 8,
+              left: 8,
               child: Material(
                 color: Colors.black45,
                 shape: const CircleBorder(),
                 child: IconButton(
-                  key: const ValueKey('profile-overflow'),
-                  tooltip: L10n.of(context)('others'),
-                  onPressed: onOverflow,
-                  icon: const Icon(Icons.more_horiz, color: Colors.white),
+                  key: const ValueKey('profile-close'),
+                  tooltip: L10n.of(context)('close'),
+                  onPressed: onClose,
+                  icon: const Icon(Icons.close, color: Colors.white),
                 ),
               ),
             ),
-          Positioned(
-            left: 16,
-            top: bannerH - overlap,
-            child: ProfileAvatarBadge(session: s, user: user, size: avatar),
-          ),
-          if ((user.statusMessage ?? '').trim().isNotEmpty)
+            if (showOverflow)
+              Positioned(
+                top: 8,
+                right: 8,
+                child: Material(
+                  color: Colors.black45,
+                  shape: const CircleBorder(),
+                  child: IconButton(
+                    key: const ValueKey('profile-overflow'),
+                    tooltip: L10n.of(context)('others'),
+                    onPressed: onOverflow,
+                    icon: const Icon(Icons.more_horiz, color: Colors.white),
+                  ),
+                ),
+              ),
             Positioned(
-              left: 16 + avatar + 12,
-              top: bannerH - overlap + 8,
-              right: 16,
-              child: Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 10,
-                  vertical: 6,
-                ),
-                decoration: BoxDecoration(
-                  color: p.rail,
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Text(
-                  user.statusMessage!.trim(),
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(color: p.foreground, fontSize: 13),
+              left: 16,
+              top: bannerH - overlap,
+              child: ProfileAvatarBadge(session: s, user: user, size: avatar),
+            ),
+            if ((user.statusMessage ?? '').trim().isNotEmpty)
+              Positioned(
+                left: 16 + avatar + 12,
+                top: bannerH - overlap + 8,
+                right: 16,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 6,
+                  ),
+                  decoration: BoxDecoration(
+                    color: p.rail,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Text(
+                    user.statusMessage!.trim(),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(color: p.foreground, fontSize: 13),
+                  ),
                 ),
               ),
-            ),
-        ],
+          ],
+        ),
       ),
     );
   }

@@ -34,6 +34,7 @@ import 'package:kurier_web/session/session_controller.dart';
 import 'package:kurier_web/ui/shared.dart';
 import 'package:kurier_web/ui/message_embeds.dart';
 import 'package:kurier_web/ui/message_html.dart';
+import 'package:kurier_web/ui/youtube_iframe_io.dart';
 import 'package:kurier_web/ui/reactions_viewer.dart';
 import 'package:kurier_web/ui/server_settings.dart';
 
@@ -1685,6 +1686,22 @@ void main() {
           },
         ]),
         {'dQw4w9WgXcQ'},
+      );
+    });
+
+    test('native YouTube player HTML sends a Referer-capable origin', () {
+      const videoId = 'yxo4j0DdnwY';
+      final html = youtubeNativePlayerHtml(videoId);
+      expect(kYoutubeNativeEmbedOrigin, 'https://com.brozantine.kurier');
+      expect(
+        html,
+        contains(
+          'src="https://www.youtube-nocookie.com/embed/$videoId?autoplay=1&rel=0&playsinline=1"',
+        ),
+      );
+      expect(
+        html,
+        contains('referrerpolicy="strict-origin-when-cross-origin"'),
       );
     });
 

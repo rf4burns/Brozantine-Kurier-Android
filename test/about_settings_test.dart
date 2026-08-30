@@ -40,6 +40,19 @@ void main() {
 
     await tester.tap(find.text('Changelog'));
     await tester.pumpAndSettle();
+    expect(find.text('1.0.6'), findsWidgets);
+    expect(
+      find.textContaining('YouTube videos play in chat again'),
+      findsOneWidget,
+    );
+    await tester.scrollUntilVisible(
+      find.textContaining('First Android client'),
+      80,
+      scrollable: find.descendant(
+        of: find.byType(AlertDialog),
+        matching: find.byType(Scrollable),
+      ),
+    );
     expect(find.text('1.0.0'), findsWidgets);
     expect(find.textContaining('First Android client'), findsOneWidget);
 

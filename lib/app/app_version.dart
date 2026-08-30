@@ -90,6 +90,21 @@ String dartStringLiteral(String value) {
   return "'${value.replaceAll(r'\', r'\\').replaceAll("'", r"\'").replaceAll(r'$', r'\$')}'";
 }
 
+final _placeholderBuildNote = RegExp(
+  r'^Build \d+\.\d+\.\d+\.?$',
+  caseSensitive: false,
+);
+
+/// True when a bullet is something a client would actually want to read.
+bool isClientFacingReleaseNote(String note) {
+  final t = note.trim();
+  return t.isNotEmpty && !_placeholderBuildNote.hasMatch(t);
+}
+
+List<String> clientFacingReleaseNotes(Iterable<String> notes) {
+  return notes.map((s) => s.trim()).where(isClientFacingReleaseNote).toList();
+}
+
 /// Inserts a new [ReleaseNote] at the head of `const releaseNotes = <ReleaseNote>[`.
 String insertReleaseNoteBlock(
   String source, {
@@ -104,7 +119,12 @@ String insertReleaseNoteBlock(
   if (source.contains("version: '$version'")) {
     return source;
   }
-  final bullets = notes.isEmpty ? ['Build $version.'] : notes;
+  final bullets = clientFacingReleaseNotes(notes);
+  if (bullets.isEmpty) {
+    throw ArgumentError(
+      'client-facing changelog notes are required for $version',
+    );
+  }
   final block = StringBuffer()
     ..writeln()
     ..writeln('  ReleaseNote(')

@@ -421,6 +421,9 @@ class SessionController extends ChangeNotifier {
   }) async {
     error = null;
     phase = SessionPhase.connecting;
+    overlay = null;
+    profileUser = null;
+    profileAnchor = null;
     token = existingToken;
     activeHost = host;
     httpApi = HttpApi(originOf(host));
@@ -538,6 +541,9 @@ class SessionController extends ChangeNotifier {
     }
     disconnectCode = code;
     disconnectReason = reason;
+    overlay = null;
+    profileUser = null;
+    profileAnchor = null;
     phase = SessionPhase.disconnected;
     notifyListeners();
   }
@@ -3305,6 +3311,9 @@ class SessionController extends ChangeNotifier {
     jumpTargetChannelId = null;
     jumpTargetMessageId = null;
     selectedChannelId = null;
+    overlay = null;
+    profileUser = null;
+    profileAnchor = null;
     phase = SessionPhase.login;
     _closingByUser = false;
     notifyListeners();
