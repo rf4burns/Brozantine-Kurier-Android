@@ -9,6 +9,7 @@ import '../protocol/presence.dart';
 import '../session/session_controller.dart';
 import 'member_context_menu.dart';
 import 'shared.dart';
+import 'user_admin_info.dart';
 
 class ProfileCard extends StatelessWidget {
   const ProfileCard({super.key, required this.session, required this.user});
@@ -600,6 +601,30 @@ class _MobileProfileBody extends StatelessWidget {
                               style: FilledButton.styleFrom(
                                 backgroundColor: context.k.accent,
                                 foregroundColor: Colors.white,
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
+                        if (a.showAdminInfo) ...[
+                          SizedBox(height: a.dmOk ? 8 : 16),
+                          SizedBox(
+                            width: double.infinity,
+                            height: 44,
+                            child: OutlinedButton.icon(
+                              key: const ValueKey('profile-details'),
+                              onPressed: () =>
+                                  showUserAdminInfoSheet(context, s, live),
+                              icon: const Icon(
+                                Icons.assignment_outlined,
+                                size: 18,
+                              ),
+                              label: Text(l('detailsTitle')),
+                              style: OutlinedButton.styleFrom(
+                                foregroundColor: p.foreground,
+                                side: BorderSide(color: p.divider),
                                 shape: RoundedRectangleBorder(
                                   borderRadius: BorderRadius.circular(8),
                                 ),

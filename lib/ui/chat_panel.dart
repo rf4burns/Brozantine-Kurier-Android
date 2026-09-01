@@ -25,11 +25,21 @@ import 'member_list.dart';
 import 'message_embeds.dart';
 import 'message_html.dart';
 import 'mentions_dialog.dart';
+import 'mention_suggestions.dart';
 import 'pins_popover.dart';
 import 'reactions_viewer.dart';
 import 'search_dialog.dart';
 import 'shared.dart';
 import 'voice_stage.dart';
+
+String _channelTitle(SessionController s, KurierChannel channel) {
+  if (!channel.isDm) return channel.name;
+  return s.dms
+          .where((d) => d.channelId == channel.id)
+          .map((d) => s.users[d.userId]?.displayName)
+          .firstOrNull ??
+      channel.name;
+}
 
 class ChatPanel extends StatefulWidget {
   const ChatPanel({
@@ -242,15 +252,7 @@ class _ChatPanelState extends State<ChatPanel> {
                     const SizedBox(width: 8),
                     Flexible(
                       child: Text(
-                        channel.isDm
-                            ? (s.dms
-                                      .where((d) => d.channelId == channel.id)
-                                      .map(
-                                        (d) => s.users[d.userId]?.displayName,
-                                      )
-                                      .firstOrNull ??
-                                  channel.name)
-                            : channel.name,
+                        _channelTitle(s, channel),
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(
                           color: context.p.foreground,
@@ -882,9 +884,8 @@ class MessageTile extends StatelessWidget {
           MenuAction(
             label: l('copyText'),
             icon: Icons.content_copy,
-            onTap: () => PlatformBridge.copyText(
-              htmlToPlainText(message.content ?? ''),
-            ),
+            onTap: () =>
+                PlatformBridge.copyText(htmlToPlainText(message.content ?? '')),
           ),
         if (message.reactions.isNotEmpty)
           MenuAction(
@@ -1221,31 +1222,12 @@ class MessageTile extends StatelessWidget {
   }
 
   Future<void> _edit(BuildContext context) async {
-    final ctrl = TextEditingController(
-      text: htmlToPlainText(message.content ?? ''),
-    );
-    final ok = await showDialog<bool>(
+    final next = await showMentionEditDialog(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text(L10n.of(ctx)('editMessage')),
-        content: KurierField(
-          controller: ctrl,
-          maxLines: 4,
-          maxLength: AppConfig.maxMessageLength,
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: Text(L10n.of(ctx)('cancel')),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            child: Text(L10n.of(ctx)('save')),
-          ),
-        ],
-      ),
+      session: session,
+      initialText: htmlToPlainText(message.content ?? ''),
     );
-    if (ok == true) await session.editMessage(message.id, ctrl.text);
+    if (next != null) await session.editMessage(message.id, next);
   }
 }
 
@@ -1312,7 +1294,7 @@ class _MessageSurfaceState extends State<_MessageSurface> {
   }
 }
 
-class ComposeBar extends StatelessWidget {
+class ComposeBar extends StatefulWidget {
   const ComposeBar({
     super.key,
     required this.controller,
@@ -1329,143 +1311,198 @@ class ComposeBar extends StatelessWidget {
   final VoidCallback onSend;
 
   @override
+  State<ComposeBar> createState() => _ComposeBarState();
+}
+
+class _ComposeBarState extends State<ComposeBar> {
+  late MentionMenuController _mentions;
+  bool _appliedMentionThisEvent = false;
+
+  TextEditingController get controller => widget.controller;
+  SessionController get session => widget.session;
+
+  @override
+  void initState() {
+    super.initState();
+    _mentions = MentionMenuController(controller: controller, session: session);
+  }
+
+  @override
+  void didUpdateWidget(ComposeBar oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.controller != widget.controller ||
+        oldWidget.session != widget.session) {
+      _mentions.dispose();
+      _mentions = MentionMenuController(
+        controller: controller,
+        session: session,
+      );
+    }
+  }
+
+  @override
+  void dispose() {
+    _mentions.dispose();
+    super.dispose();
+  }
+
+  void _trySend() {
+    if (controller.value.isComposingRangeValid) return;
+    if (_appliedMentionThisEvent) return;
+    if (_mentions.applyHighlighted()) {
+      _appliedMentionThisEvent = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _appliedMentionThisEvent = false;
+      });
+      return;
+    }
+    widget.onSend();
+  }
+
+  @override
   Widget build(BuildContext context) {
     final l = L10n.of(context);
     final s = session;
-    final hint = channel.isDm
-        ? l('dmPlaceholder', {'name': channel.name})
-        : l('messagePlaceholder', {'name': channel.name});
+    final title = _channelTitle(s, widget.channel);
+    final hint = widget.channel.isDm
+        ? l('dmPlaceholder', {'name': title})
+        : l('messagePlaceholder', {'name': title});
     final bottom = 16.0 + MediaQuery.paddingOf(context).bottom;
     return Padding(
       padding: EdgeInsets.fromLTRB(16, 8, 16, bottom),
-      child: Material(
-        color: context.p.card,
-        borderRadius: BorderRadius.circular(8),
-        clipBehavior: Clip.antiAlias,
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(minHeight: 44),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 4),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.end,
-              children: [
-                Expanded(
-                  child: Shortcuts(
-                    shortcuts: const {
-                      SingleActivator(
-                        LogicalKeyboardKey.enter,
-                        includeRepeats: false,
-                      ): _SendIntent(),
-                      SingleActivator(
-                        LogicalKeyboardKey.numpadEnter,
-                        includeRepeats: false,
-                      ): _SendIntent(),
-                      SingleActivator(LogicalKeyboardKey.enter, shift: true):
-                          _NewlineIntent(),
-                      SingleActivator(
-                        LogicalKeyboardKey.numpadEnter,
-                        shift: true,
-                      ): _NewlineIntent(),
-                    },
-                    child: Actions(
-                      actions: {
-                        _SendIntent: CallbackAction<_SendIntent>(
-                          onInvoke: (_) {
-                            if (controller.value.isComposingRangeValid) {
-                              return null;
-                            }
-                            onSend();
-                            return null;
-                          },
-                        ),
-                        _NewlineIntent: CallbackAction<_NewlineIntent>(
-                          onInvoke: (_) {
-                            if (controller.value.isComposingRangeValid) {
-                              return null;
-                            }
-                            _insertAtCursor('\n');
-                            return null;
-                          },
-                        ),
+      child: MentionSuggestionColumn(
+        menu: _mentions,
+        child: Material(
+          color: context.p.card,
+          borderRadius: BorderRadius.circular(8),
+          clipBehavior: Clip.antiAlias,
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(minHeight: 44),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 4),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  Expanded(
+                    child: Shortcuts(
+                      shortcuts: {
+                        const SingleActivator(
+                          LogicalKeyboardKey.enter,
+                          includeRepeats: false,
+                        ): const _SendIntent(),
+                        const SingleActivator(
+                          LogicalKeyboardKey.numpadEnter,
+                          includeRepeats: false,
+                        ): const _SendIntent(),
+                        const SingleActivator(
+                          LogicalKeyboardKey.enter,
+                          shift: true,
+                        ): const _NewlineIntent(),
+                        const SingleActivator(
+                          LogicalKeyboardKey.numpadEnter,
+                          shift: true,
+                        ): const _NewlineIntent(),
+                        ...mentionShortcutMap(includeApply: true),
                       },
-                      child: TextField(
-                        controller: controller,
-                        focusNode: focus,
-                        minLines: 1,
-                        maxLines: 8,
-                        maxLength: AppConfig.maxMessageLength,
-                        maxLengthEnforcement: MaxLengthEnforcement.enforced,
-                        keyboardType: TextInputType.multiline,
-                        style: TextStyle(
-                          color: context.p.foreground,
-                          fontSize: 16,
-                        ),
-                        cursorColor: context.k.accent,
-                        textInputAction: TextInputAction.send,
-                        onSubmitted: (_) => onSend(),
-                        onChanged: (_) => s.signalTyping(),
-                        decoration: InputDecoration(
-                          hintText: hint,
-                          hintStyle: TextStyle(
-                            color: context.p.faint,
+                      child: Actions(
+                        actions: {
+                          _SendIntent: CallbackAction<_SendIntent>(
+                            onInvoke: (_) {
+                              _trySend();
+                              return null;
+                            },
+                          ),
+                          _NewlineIntent: CallbackAction<_NewlineIntent>(
+                            onInvoke: (_) {
+                              if (controller.value.isComposingRangeValid) {
+                                return null;
+                              }
+                              _insertAtCursor('\n');
+                              return null;
+                            },
+                          ),
+                          ...mentionShortcutActions(_mentions),
+                        },
+                        child: TextField(
+                          key: const ValueKey('compose-field'),
+                          controller: controller,
+                          focusNode: widget.focus,
+                          minLines: 1,
+                          maxLines: 8,
+                          maxLength: AppConfig.maxMessageLength,
+                          maxLengthEnforcement: MaxLengthEnforcement.enforced,
+                          keyboardType: TextInputType.multiline,
+                          style: TextStyle(
+                            color: context.p.foreground,
                             fontSize: 16,
                           ),
-                          border: InputBorder.none,
-                          enabledBorder: InputBorder.none,
-                          focusedBorder: InputBorder.none,
-                          isDense: true,
-                          filled: false,
-                          counterText: '',
-                          contentPadding: const EdgeInsets.symmetric(
-                            horizontal: 8,
-                            vertical: 11,
+                          cursorColor: context.k.accent,
+                          textInputAction: TextInputAction.send,
+                          onSubmitted: (_) => _trySend(),
+                          onChanged: (_) => s.signalTyping(),
+                          decoration: InputDecoration(
+                            hintText: hint,
+                            hintStyle: TextStyle(
+                              color: context.p.faint,
+                              fontSize: 16,
+                            ),
+                            border: InputBorder.none,
+                            enabledBorder: InputBorder.none,
+                            focusedBorder: InputBorder.none,
+                            isDense: true,
+                            filled: false,
+                            counterText: '',
+                            contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 8,
+                              vertical: 11,
+                            ),
                           ),
                         ),
                       ),
                     ),
                   ),
-                ),
-                ListenableBuilder(
-                  listenable: controller,
-                  builder: (context, _) {
-                    final remaining =
-                        AppConfig.maxMessageLength - controller.text.length;
-                    if (remaining > 200) return const SizedBox.shrink();
-                    return Padding(
-                      padding: const EdgeInsets.only(right: 4, bottom: 12),
-                      child: Text(
-                        '$remaining',
-                        style: TextStyle(
-                          color: remaining <= 50
-                              ? context.p.dnd
-                              : context.p.muted,
-                          fontSize: 12,
-                          fontWeight: FontWeight.w600,
+                  ListenableBuilder(
+                    listenable: controller,
+                    builder: (context, _) {
+                      final remaining =
+                          AppConfig.maxMessageLength - controller.text.length;
+                      if (remaining > 200) return const SizedBox.shrink();
+                      return Padding(
+                        padding: const EdgeInsets.only(right: 4, bottom: 12),
+                        child: Text(
+                          '$remaining',
+                          style: TextStyle(
+                            color: remaining <= 50
+                                ? context.p.dnd
+                                : context.p.muted,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                          ),
                         ),
-                      ),
-                    );
-                  },
-                ),
-                CompactIconButton(
-                  icon: Icons.gif_box_outlined,
-                  iconSize: 20,
-                  tooltip: l('gifs'),
-                  onPressed: () => _gifs(context),
-                ),
-                CompactIconButton(
-                  icon: Icons.emoji_emotions_outlined,
-                  iconSize: 20,
-                  tooltip: l('emoji'),
-                  onPressed: () => _insertEmoji(context, s),
-                ),
-                if (s.can(Permission.uploadFiles))
-                  CompactIconButton(
-                    icon: Icons.attach_file,
-                    iconSize: 20,
-                    tooltip: l('upload'),
-                    onPressed: () => _attach(s),
+                      );
+                    },
                   ),
-              ],
+                  CompactIconButton(
+                    icon: Icons.gif_box_outlined,
+                    iconSize: 20,
+                    tooltip: l('gifs'),
+                    onPressed: () => _gifs(context),
+                  ),
+                  CompactIconButton(
+                    icon: Icons.emoji_emotions_outlined,
+                    iconSize: 20,
+                    tooltip: l('emoji'),
+                    onPressed: () => _insertEmoji(context, s),
+                  ),
+                  if (s.can(Permission.uploadFiles))
+                    CompactIconButton(
+                      icon: Icons.attach_file,
+                      iconSize: 20,
+                      tooltip: l('upload'),
+                      onPressed: () => _attach(s),
+                    ),
+                ],
+              ),
             ),
           ),
         ),

@@ -15,6 +15,15 @@ class ThirdPartyProgram {
 /// Latest first. English only — per-build copy is not sent through l10n.
 const releaseNotes = <ReleaseNote>[
   ReleaseNote(
+    version: '1.0.7',
+    notes: [
+      'Direct messages open as chat instead of the voice stage.',
+      'Type @ to mention people from a suggestion list.',
+      'Owners and admins can open Details on a profile.',
+    ],
+  ),
+
+  ReleaseNote(
     version: '1.0.6',
     notes: [
       'YouTube videos play in chat again.',

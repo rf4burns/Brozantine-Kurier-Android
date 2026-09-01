@@ -1643,7 +1643,7 @@ class SessionController extends ChangeNotifier {
       showingDms = channels[id]?.isDm ?? false;
       final ch = channels[id];
       _rememberTextChannel(ch);
-      if (ch?.isVoice == true &&
+      if (ch?.opensAsVoiceStage == true &&
           !(connectedVoiceChannelId == id && voiceState == 'connected')) {
         await joinVoice(id);
       }
@@ -1666,7 +1666,7 @@ class SessionController extends ChangeNotifier {
         await trpc?.mutate('channels.markAsRead', {'channelId': id});
         readStates[id] = 0;
       } catch (_) {}
-    } else if (ch?.isVoice == true) {
+    } else if (ch?.opensAsVoiceStage == true) {
       await joinVoice(id);
     }
     notifyListeners();
@@ -1890,33 +1890,15 @@ class SessionController extends ChangeNotifier {
 
   String _messageHtml(String text) {
     var html = textToMessageHtml(text);
-    html = _injectMentions(html, text);
+    final canEveryone = can(Permission.mentionEveryone);
+    html = injectMentions(
+      html,
+      text,
+      users: users.values,
+      everyone: canEveryone,
+      here: canEveryone,
+    );
     return EmojiCodec.expandCustomEmojisInEscapedHtml(html, customEmojis);
-  }
-
-  String _injectMentions(String html, String text) {
-    var out = html;
-    final everyone = RegExp(r'@everyone\b');
-    final here = RegExp(r'@here\b');
-    if (everyone.hasMatch(text)) {
-      out = out.replaceAll(
-        '@everyone',
-        mentionSpan(label: 'everyone', kind: 'everyone'),
-      );
-    }
-    if (here.hasMatch(text)) {
-      out = out.replaceAll('@here', mentionSpan(label: 'here', kind: 'here'));
-    }
-    for (final u in users.values) {
-      final pat = RegExp('@${RegExp.escape(u.name)}\\b');
-      if (pat.hasMatch(text)) {
-        out = out.replaceAll(
-          '@${u.name}',
-          mentionSpan(label: u.name, userId: u.id),
-        );
-      }
-    }
-    return out;
   }
 
   Future<void> signalTyping() async {

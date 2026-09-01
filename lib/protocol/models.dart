@@ -561,6 +561,10 @@ class KurierChannel {
   bool get isText => type == 'TEXT';
   bool get isVoice => type == 'VOICE';
 
+  /// DMs are stored as VOICE so private calls can be added later.
+  /// The chat UI still wins over the voice stage.
+  bool get opensAsVoiceStage => isVoice && !isDm;
+
   /// Voice-channel status line. Server stores this as `topic`.
   String? get displayedVoiceStatus {
     if (!isVoice) return null;

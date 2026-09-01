@@ -117,6 +117,113 @@ void main() {
       expect(hasMention(here, 1, isOnline: false), isFalse);
       expect(hasMention(here, 1, isOnline: true), isTrue);
     });
+
+    test('mentionQueryAt finds @tokens and ignores emails', () {
+      expect(mentionQueryAt('@', 1)?.query, '');
+      expect(mentionQueryAt('@Ada', 4)?.query, 'Ada');
+      expect(mentionQueryAt('@Ada', 4)?.atIndex, 0);
+      expect(mentionQueryAt('hi @Ad', 6)?.query, 'Ad');
+      expect(mentionQueryAt('hi @Ad', 6)?.atIndex, 3);
+      expect(mentionQueryAt('email@x', 7), isNull);
+      expect(mentionQueryAt('hi@Ada', 6), isNull);
+      expect(mentionQueryAt('hello', 5), isNull);
+      expect(mentionQueryAt('hi @Ada there', 7)?.query, 'Ada');
+      expect(mentionQueryAt('hi @Ada there', 13), isNull);
+    });
+
+    test('mentionCandidates ranks starts-with above contains', () {
+      final users = [
+        KurierUser(id: 1, name: 'Ada'),
+        KurierUser(id: 2, name: 'gordon', nickname: 'Gadget'),
+        KurierUser(id: 3, name: 'sam', nickname: 'Gordon-Lee'),
+        KurierUser(id: 4, name: 'gone', deleted: true),
+        KurierUser(id: 5, name: 'gab', banned: true),
+      ];
+      final hits = mentionCandidates(users: users, query: 'g');
+      expect(hits.map((c) => c.user?.id), [2, 3]);
+      expect(hits.first.label, 'Gadget');
+      expect(hits.first.subtitle, 'gordon');
+      expect(hits.first.insert, 'gordon');
+    });
+
+    test('mentionCandidates includes everyone and here when allowed', () {
+      final users = [KurierUser(id: 1, name: 'Ada')];
+      final none = mentionCandidates(users: users, query: '');
+      expect(none.any((c) => c.kind != MentionKind.user), isFalse);
+
+      final all = mentionCandidates(
+        users: users,
+        query: '',
+        canMentionEveryone: true,
+      );
+      expect(all.first.kind, MentionKind.everyone);
+      expect(all[1].kind, MentionKind.here);
+      expect(all.last.insert, 'Ada');
+
+      final prefix = mentionCandidates(
+        users: users,
+        query: 'eve',
+        canMentionEveryone: true,
+      );
+      expect(prefix.map((c) => c.kind), [MentionKind.everyone]);
+    });
+
+    test('injectMentions matches nicknames and ignores case', () {
+      final html = textToMessageHtml('hi @gordon and @ADA');
+      final out = injectMentions(
+        html,
+        'hi @gordon and @ADA',
+        users: [
+          KurierUser(id: 7, name: 'rf4burns', nickname: 'Gordon'),
+          KurierUser(id: 8, name: 'Ada'),
+        ],
+      );
+      expect(
+        out,
+        contains(
+          '<span data-type="mention" data-mention-kind="user" data-user-id="7">@rf4burns</span>',
+        ),
+      );
+      expect(
+        out,
+        contains(
+          '<span data-type="mention" data-mention-kind="user" data-user-id="8">@Ada</span>',
+        ),
+      );
+    });
+
+    test('injectMentions prefers the longest username', () {
+      final text = 'hello @Alice';
+      final out = injectMentions(
+        textToMessageHtml(text),
+        text,
+        users: [
+          KurierUser(id: 1, name: 'Al'),
+          KurierUser(id: 2, name: 'Alice'),
+        ],
+      );
+      expect(out, contains('data-user-id="2"'));
+      expect(out, isNot(contains('data-user-id="1"')));
+      expect(out, contains('>@Alice</span>'));
+    });
+
+    test('injectMentions gates everyone and here', () {
+      const text = 'ping @everyone and @here';
+      final html = textToMessageHtml(text);
+      final denied = injectMentions(html, text, users: const []);
+      expect(denied, contains('@everyone'));
+      expect(denied, isNot(contains('data-mention-kind="everyone"')));
+
+      final allowed = injectMentions(
+        html,
+        text,
+        users: const [],
+        everyone: true,
+        here: true,
+      );
+      expect(allowed, contains('data-mention-kind="everyone"'));
+      expect(allowed, contains('data-mention-kind="here"'));
+    });
   });
 
   group('incoming message sounds', () {
@@ -1352,6 +1459,19 @@ void main() {
       expect(c.displayedVoiceStatus, isNull);
     });
 
+    test('VOICE DMs do not open as the voice stage', () {
+      final c = KurierChannel.fromJson({
+        'id': 30,
+        'type': 'VOICE',
+        'name': 'DM - 2:30',
+        'isDm': true,
+        'private': true,
+      });
+      expect(c.isVoice, isTrue);
+      expect(c.isDm, isTrue);
+      expect(c.opensAsVoiceStage, isFalse);
+    });
+
     test('blank topic is not displayed', () {
       final c = KurierChannel.fromJson({
         'id': 20,
@@ -2499,6 +2619,22 @@ void main() {
       s.selectedChannelId = 10;
       await s.selectChannel(10);
       expect(s.voiceState, 'idle');
+    });
+
+    test('re-selecting a VOICE DM does not join voice', () async {
+      final s = voiceSession();
+      s.channels[30] = KurierChannel(
+        id: 30,
+        type: 'VOICE',
+        name: 'DM - 2:30',
+        position: 0,
+        isDm: true,
+        private: true,
+      );
+      s.selectedChannelId = 30;
+      await s.selectChannel(30);
+      expect(s.voiceState, 'idle');
+      expect(s.connectedVoiceChannelId, isNull);
     });
 
     test(

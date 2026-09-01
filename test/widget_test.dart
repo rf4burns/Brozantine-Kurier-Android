@@ -232,6 +232,54 @@ void main() {
     expect(find.text('Direct Messages'), findsNothing);
   });
 
+  testWidgets('phone VOICE DM opens chat instead of the voice stage', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final s = _readySession(selectedChannelId: 30);
+    s.channels[30] = KurierChannel(
+      id: 30,
+      type: 'VOICE',
+      name: 'DM - 2:30',
+      position: 0,
+      isDm: true,
+      private: true,
+    );
+    s.dms.add(
+      DmConversation(
+        channelId: 30,
+        userId: 2,
+        unreadCount: 0,
+        lastMessageAt: 0,
+      ),
+    );
+    s.messages[30] = [
+      KurierMessage(
+        id: 9,
+        channelId: 30,
+        createdAt: 0,
+        content: '<p>secret hello</p>',
+        userId: 2,
+      ),
+    ];
+    s.showingDms = true;
+
+    await tester.pumpWidget(_app(s));
+    await tester.pump();
+
+    expect(find.text('Join Voice'), findsNothing);
+    expect(find.byType(VoiceStage), findsNothing);
+    expect(find.byIcon(Icons.forum), findsOneWidget);
+    expect(find.text('Gordon'), findsWidgets);
+    expect(find.text('secret hello'), findsOneWidget);
+    expect(find.byType(TextField), findsOneWidget);
+    expect(find.text('Message @Gordon'), findsOneWidget);
+  });
+
   testWidgets('desktop chat shows message and member list', (tester) async {
     tester.view.physicalSize = const Size(1280, 800);
     tester.view.devicePixelRatio = 1;
@@ -764,6 +812,46 @@ void main() {
       tester.widget<TextField>(fieldFinder).controller!.text.length,
       AppConfig.maxMessageLength,
     );
+  });
+
+  testWidgets('composer suggests members when typing @', (tester) async {
+    tester.view.physicalSize = const Size(1280, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(_app(_readySession(selectedChannelId: 10)));
+    await tester.pump();
+
+    final field = find.byKey(const ValueKey('compose-field'));
+    await tester.enterText(field, '@G');
+    await tester.pump();
+
+    expect(find.byKey(const ValueKey('mention-user-2')), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('mention-user-2')));
+    await tester.pump();
+
+    expect(tester.widget<TextField>(field).controller!.text, '@Gordon ');
+    expect(find.byKey(const ValueKey('mention-user-2')), findsNothing);
+  });
+
+  testWidgets('composer enter applies the highlighted mention', (tester) async {
+    tester.view.physicalSize = const Size(1280, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(_app(_readySession(selectedChannelId: 10)));
+    await tester.pump();
+
+    final field = find.byKey(const ValueKey('compose-field'));
+    await tester.enterText(field, '@G');
+    await tester.pump();
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pump();
+
+    expect(tester.widget<TextField>(field).controller!.text, '@Gordon ');
   });
 
   testWidgets('desktop compose emoji opens the Discord picker dialog', (
@@ -3319,6 +3407,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Close'), findsOneWidget);
+    expect(find.text('Details'), findsWidgets);
     expect(find.text('Copy username'), findsOneWidget);
     expect(find.text('Copy user ID'), findsOneWidget);
     expect(find.text('Mute locally'), findsOneWidget);
@@ -3367,6 +3456,171 @@ void main() {
     expect(find.text('Ban from server'), findsNothing);
     expect(find.text('Server mute'), findsNothing);
     expect(find.text('Manage roles'), findsNothing);
+    expect(find.text('Details'), findsNothing);
+    expect(find.byKey(const ValueKey('profile-details')), findsNothing);
+  });
+
+  testWidgets('phone profile owner can open details and reveal secrets', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    const token = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+    final s = _readySession();
+    _grantOwner(s);
+    s.userInfoOverride = (id) => id == 2
+        ? UserAdminInfo(
+            user: KurierUser(
+              id: 2,
+              name: 'Gordon',
+              identity: 'gordon@example.com',
+            ),
+            logins: const [
+              UserLoginInfo(
+                ip: '203.0.113.9',
+                country: 'US',
+                city: 'Austin',
+                deviceToken: token,
+              ),
+            ],
+          )
+        : null;
+
+    s.showProfile(s.users[2]!);
+    await tester.pumpWidget(_app(s));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const ValueKey('profile-details')), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('profile-details')));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const ValueKey('user-admin-info-sheet')), findsOneWidget);
+    expect(find.text('IP Address'), findsOneWidget);
+    expect(find.text('Identity'), findsOneWidget);
+    expect(find.text('Browser token'), findsOneWidget);
+    expect(find.text('Ban browser'), findsOneWidget);
+    expect(find.text('203.0.113.9'), findsNothing);
+    expect(find.text('gordon@example.com'), findsNothing);
+    expect(find.text(token), findsNothing);
+
+    final ipRow = find
+        .ancestor(of: find.text('IP Address'), matching: find.byType(Row))
+        .first;
+    await tester.tap(
+      find.descendant(
+        of: ipRow,
+        matching: find.byIcon(Icons.visibility_outlined),
+      ),
+    );
+    await tester.pump();
+    expect(find.text('203.0.113.9'), findsOneWidget);
+
+    final identityRow = find
+        .ancestor(of: find.text('Identity'), matching: find.byType(Row))
+        .first;
+    await tester.tap(
+      find.descendant(
+        of: identityRow,
+        matching: find.byIcon(Icons.visibility_outlined),
+      ),
+    );
+    await tester.pump();
+    expect(find.text('gordon@example.com'), findsOneWidget);
+
+    final tokenRow = find
+        .ancestor(
+          of: find.byIcon(Icons.fingerprint),
+          matching: find.byType(Row),
+        )
+        .first;
+    await tester.tap(
+      find.descendant(
+        of: tokenRow,
+        matching: find.byIcon(Icons.visibility_outlined),
+      ),
+    );
+    await tester.pump();
+    expect(find.text(token), findsOneWidget);
+  });
+
+  testWidgets('phone profile details hides browser token for non-owners', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final s = _readySession();
+    s.roles[10] = KurierRole(
+      id: 10,
+      name: 'Mod',
+      color: '#EB459E',
+      position: 50,
+      hoist: true,
+      isDefault: false,
+      isPersistent: false,
+      permissions: const [
+        Permission.manageUsers,
+        Permission.viewUserSensitiveData,
+      ],
+    );
+    s.users[1] = s.users[1]!.copyWith(roleIds: [10]);
+    s.userInfoOverride = (_) => UserAdminInfo(
+      user: KurierUser(id: 2, name: 'Gordon', identity: 'gordon@example.com'),
+      logins: const [
+        UserLoginInfo(
+          ip: '203.0.113.9',
+          country: 'US',
+          city: 'Austin',
+          deviceToken: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+        ),
+      ],
+    );
+
+    s.showProfile(s.users[2]!);
+    await tester.pumpWidget(_app(s));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('profile-details')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('IP Address'), findsOneWidget);
+    expect(find.text('Identity'), findsOneWidget);
+    expect(find.text('Browser token'), findsNothing);
+    expect(find.text('Ban browser'), findsNothing);
+    expect(find.byIcon(Icons.fingerprint), findsNothing);
+
+    final ipRow = find
+        .ancestor(of: find.text('IP Address'), matching: find.byType(Row))
+        .first;
+    await tester.tap(
+      find.descendant(
+        of: ipRow,
+        matching: find.byIcon(Icons.visibility_outlined),
+      ),
+    );
+    await tester.pump();
+    expect(find.text('203.0.113.9'), findsOneWidget);
+  });
+
+  testWidgets('phone profile hides details without permission', (tester) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final s = _readySession();
+    s.showProfile(s.users[2]!);
+    await tester.pumpWidget(_app(s));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const ValueKey('profile-details')), findsNothing);
+    expect(find.text('IP Address'), findsNothing);
+    expect(find.text('Browser token'), findsNothing);
   });
 
   testWidgets('phone profile sheet closes from the close button', (

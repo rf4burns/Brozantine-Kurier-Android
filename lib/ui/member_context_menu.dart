@@ -9,54 +9,67 @@ import '../protocol/models.dart';
 import '../protocol/permissions.dart';
 import '../session/session_controller.dart';
 import 'shared.dart';
+import 'user_admin_info.dart';
+
+export 'user_admin_info.dart' show banMemberBrowser;
 
 const _menuWidth = 280.0;
 
 class MemberActionPlan {
   MemberActionPlan(SessionController s, KurierUser u)
-      : own = u.id == s.ownUserId,
-        deleted = u.deleted,
-        canMod = s.canModerate(u),
-        dmOk = u.id != s.ownUserId &&
-            !u.deleted &&
-            s.publicSettings['directMessagesEnabled'] != false,
-        showVolume = u.id != s.ownUserId && !u.deleted,
-        showNick = !u.deleted &&
-            (u.id == s.ownUserId
-                ? s.can(Permission.changeNickname)
-                : s.can(Permission.manageNicknames) && s.canModerate(u)),
-        showMove = u.id != s.ownUserId &&
-            !u.deleted &&
-            s.canModerate(u) &&
-            s.can(Permission.moveMembers) &&
-            s.channels.values.any((c) => c.isVoice && !c.isDm),
-        showRoles = u.id != s.ownUserId &&
-            !u.deleted &&
-            s.canModerate(u) &&
-            s.can(Permission.manageRoles),
-        showReset = u.id != s.ownUserId && !u.deleted && s.isOwner,
-        showServerMute = u.id != s.ownUserId &&
-            !u.deleted &&
-            s.canModerate(u) &&
-            s.can(Permission.muteMembers),
-        showServerDeafen = u.id != s.ownUserId &&
-            !u.deleted &&
-            s.canModerate(u) &&
-            s.can(Permission.deafenMembers),
-        showKick = u.id != s.ownUserId &&
-            !u.deleted &&
-            s.canModerate(u) &&
-            s.can(Permission.kickMembers),
-        showBan = u.id != s.ownUserId &&
-            !u.deleted &&
-            s.canModerate(u) &&
-            s.can(Permission.banMembers),
-        showDelete = u.id != s.ownUserId &&
-            !u.deleted &&
-            s.canModerate(u) &&
-            s.can(Permission.deleteUsers) &&
-            !u.roleIds.contains(AppConfig.ownerRoleId),
-        showCopy = s.can(Permission.manageUsers);
+    : own = u.id == s.ownUserId,
+      deleted = u.deleted,
+      canMod = s.canModerate(u),
+      dmOk =
+          u.id != s.ownUserId &&
+          !u.deleted &&
+          s.publicSettings['directMessagesEnabled'] != false,
+      showVolume = u.id != s.ownUserId && !u.deleted,
+      showNick =
+          !u.deleted &&
+          (u.id == s.ownUserId
+              ? s.can(Permission.changeNickname)
+              : s.can(Permission.manageNicknames) && s.canModerate(u)),
+      showMove =
+          u.id != s.ownUserId &&
+          !u.deleted &&
+          s.canModerate(u) &&
+          s.can(Permission.moveMembers) &&
+          s.channels.values.any((c) => c.isVoice && !c.isDm),
+      showRoles =
+          u.id != s.ownUserId &&
+          !u.deleted &&
+          s.canModerate(u) &&
+          s.can(Permission.manageRoles),
+      showReset = u.id != s.ownUserId && !u.deleted && s.isOwner,
+      showServerMute =
+          u.id != s.ownUserId &&
+          !u.deleted &&
+          s.canModerate(u) &&
+          s.can(Permission.muteMembers),
+      showServerDeafen =
+          u.id != s.ownUserId &&
+          !u.deleted &&
+          s.canModerate(u) &&
+          s.can(Permission.deafenMembers),
+      showKick =
+          u.id != s.ownUserId &&
+          !u.deleted &&
+          s.canModerate(u) &&
+          s.can(Permission.kickMembers),
+      showBan =
+          u.id != s.ownUserId &&
+          !u.deleted &&
+          s.canModerate(u) &&
+          s.can(Permission.banMembers),
+      showDelete =
+          u.id != s.ownUserId &&
+          !u.deleted &&
+          s.canModerate(u) &&
+          s.can(Permission.deleteUsers) &&
+          !u.roleIds.contains(AppConfig.ownerRoleId),
+      showCopy = s.can(Permission.manageUsers),
+      showAdminInfo = canFetchUserAdminInfo(s);
 
   final bool own;
   final bool deleted;
@@ -73,12 +86,18 @@ class MemberActionPlan {
   final bool showBan;
   final bool showDelete;
   final bool showCopy;
+  final bool showAdminInfo;
 
   bool get showManage => showNick || showMove || showRoles || showReset;
   bool get showModeration =>
       showServerMute || showServerDeafen || showKick || showBan || showDelete;
   bool get hasOverflowActions =>
-      dmOk || showVolume || showManage || showModeration || showCopy;
+      dmOk ||
+      showVolume ||
+      showManage ||
+      showModeration ||
+      showCopy ||
+      showAdminInfo;
 }
 
 Future<void> openMemberPointerMenu(
@@ -97,9 +116,9 @@ Future<void> openMemberPointerMenu(
 Future<void> copyMemberText(BuildContext context, String text) async {
   await Clipboard.setData(ClipboardData(text: text));
   if (!context.mounted) return;
-  ScaffoldMessenger.maybeOf(context)?.showSnackBar(
-    SnackBar(content: Text(L10n.of(context)('copied'))),
-  );
+  ScaffoldMessenger.maybeOf(
+    context,
+  )?.showSnackBar(SnackBar(content: Text(L10n.of(context)('copied'))));
 }
 
 Future<void> editMemberNickname(
@@ -135,9 +154,7 @@ Future<void> moveMemberToVoice(
   KurierUser u,
 ) async {
   final l = L10n.of(context);
-  final channels = s.channels.values
-      .where((c) => c.isVoice && !c.isDm)
-      .toList()
+  final channels = s.channels.values.where((c) => c.isVoice && !c.isDm).toList()
     ..sort((a, b) => a.position.compareTo(b.position));
   final current = s.voiceChannelIdOf(u.id);
   final picked = await showDialog<int>(
@@ -168,15 +185,12 @@ Future<void> manageMemberRoles(
 ) async {
   final l = L10n.of(context);
   final actorPos = s.highestRolePosition(s.me?.roleIds ?? const []);
-  final assignable = s.roles.values
-      .where((r) {
-        if (r.id == AppConfig.ownerRoleId) return false;
-        if (r.isDefault) return false;
-        if (s.isOwner) return true;
-        return r.position < actorPos;
-      })
-      .toList()
-    ..sort((a, b) => b.position.compareTo(a.position));
+  final assignable = s.roles.values.where((r) {
+    if (r.id == AppConfig.ownerRoleId) return false;
+    if (r.isDefault) return false;
+    if (s.isOwner) return true;
+    return r.position < actorPos;
+  }).toList()..sort((a, b) => b.position.compareTo(a.position));
   final selected = {...u.roleIds};
   final ok = await showDialog<bool>(
     context: context,
@@ -279,7 +293,11 @@ Future<void> kickMember(
     context: context,
     builder: (ctx) => AlertDialog(
       title: Text(l('kickFromServer')),
-      content: KurierField(controller: ctrl, label: l('reason'), hint: l('reason')),
+      content: KurierField(
+        controller: ctrl,
+        label: l('reason'),
+        hint: l('reason'),
+      ),
       actions: [
         TextButton(
           onPressed: () => Navigator.pop(ctx, false),
@@ -310,7 +328,11 @@ Future<void> banMember(
     context: context,
     builder: (ctx) => AlertDialog(
       title: Text(l('banFromServer')),
-      content: KurierField(controller: ctrl, label: l('reason'), hint: l('reason')),
+      content: KurierField(
+        controller: ctrl,
+        label: l('reason'),
+        hint: l('reason'),
+      ),
       actions: [
         TextButton(
           onPressed: () => Navigator.pop(ctx, false),
@@ -324,68 +346,6 @@ Future<void> banMember(
     ),
   );
   if (ok == true) await s.ban(u.id, ctrl.text);
-}
-
-Future<bool> banMemberBrowser(
-  BuildContext context,
-  SessionController s,
-  String token,
-) async {
-  final l = L10n.of(context);
-  final ctrl = TextEditingController();
-  final ok = await showDialog<bool>(
-    context: context,
-    builder: (ctx) => AlertDialog(
-      title: Text(l('banBrowserTitle')),
-      content: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Text(l('banBrowserMsg')),
-          const SizedBox(height: 12),
-          KurierField(
-            controller: ctrl,
-            label: l('reason'),
-            hint: l('reason'),
-          ),
-        ],
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(ctx, false),
-          child: Text(l('cancel')),
-        ),
-        TextButton(
-          onPressed: () => Navigator.pop(ctx, true),
-          child: Text(l('banBrowserConfirm')),
-        ),
-      ],
-    ),
-  );
-  if (ok != true || !context.mounted) {
-    ctrl.dispose();
-    return false;
-  }
-  final reason = ctrl.text.trim();
-  ctrl.dispose();
-  try {
-    await s.addAccessBan({
-      'kind': 'device',
-      'value': token,
-      if (reason.isNotEmpty) 'reason': reason,
-    });
-    if (!context.mounted) return true;
-    ScaffoldMessenger.maybeOf(context)?.showSnackBar(
-      SnackBar(content: Text(l('banBrowserSuccess'))),
-    );
-    return true;
-  } catch (_) {
-    if (!context.mounted) return false;
-    ScaffoldMessenger.maybeOf(context)?.showSnackBar(
-      SnackBar(content: Text(l('failedBanBrowser'))),
-    );
-    return false;
-  }
 }
 
 Future<void> deleteMember(
@@ -470,6 +430,12 @@ Future<void> showMemberOverflowSheet(
                 label: l('messageUser'),
                 onTap: () => run((_) => session.openDm(live.id)),
               ),
+            if (a.showAdminInfo)
+              item(
+                label: l('detailsTitle'),
+                onTap: () =>
+                    run((c) => showUserAdminInfoSheet(c, session, live)),
+              ),
             if (a.showVolume)
               item(
                 label: session.isLocallyMuted(live.id)
@@ -510,9 +476,8 @@ Future<void> showMemberOverflowSheet(
             if (a.showServerMute)
               item(
                 label: live.serverMuted ? l('unmute') : l('serverMute'),
-                onTap: () => run(
-                  (_) => session.muteUser(live.id, !live.serverMuted),
-                ),
+                onTap: () =>
+                    run((_) => session.muteUser(live.id, !live.serverMuted)),
               ),
             if (a.showServerDeafen)
               item(
@@ -560,10 +525,7 @@ Future<void> showMemberOverflowSheet(
                       color: p.sidebar,
                       borderRadius: BorderRadius.circular(12),
                       clipBehavior: Clip.antiAlias,
-                      child: ListView(
-                        shrinkWrap: true,
-                        children: tiles,
-                      ),
+                      child: ListView(shrinkWrap: true, children: tiles),
                     ),
                   ),
                   const SizedBox(height: 8),
@@ -704,40 +666,21 @@ class _MemberMenuState extends State<_MemberMenu> {
 
   KurierUser? get user => s.users[widget.userId];
 
-  bool get _canFetchInfo =>
-      s.isOwner ||
-      s.canAny(const [
-        Permission.manageUsers,
-        Permission.viewUserSensitiveData,
-        Permission.viewAuditLog,
-        Permission.manageStorage,
-      ]);
-
   @override
   void initState() {
     super.initState();
-    if (_canFetchInfo) _loadInfo();
+    if (canFetchUserAdminInfo(s)) _loadInfo();
   }
 
   Future<void> _loadInfo() async {
     setState(() => _loadingInfo = true);
     final info = await s.getUserInfo(widget.userId);
     if (!mounted) return;
+    applyFetchedUserAdminInfo(s, info);
     setState(() {
       _info = info;
       _loadingInfo = false;
     });
-    final fetched = info?.user;
-    if (fetched != null && s.users.containsKey(fetched.id)) {
-      final existing = s.users[fetched.id]!;
-      if ((existing.identity == null || existing.identity!.isEmpty) &&
-          fetched.identity != null) {
-        existing.identity = fetched.identity;
-      }
-      if (existing.lastLoginAt == 0 && fetched.lastLoginAt != 0) {
-        existing.lastLoginAt = fetched.lastLoginAt;
-      }
-    }
   }
 
   void _close() {
@@ -757,18 +700,9 @@ class _MemberMenuState extends State<_MemberMenu> {
     final l = L10n.of(context);
     final p = context.p;
     final a = MemberActionPlan(s, u);
-    final roles = u.roleIds
-        .map((id) => s.roles[id])
-        .whereType<KurierRole>()
-        .toList()
-      ..sort((b, c) => c.position.compareTo(b.position));
-
-    final showCards = _info != null;
-    final showSensitive = s.can(Permission.viewUserSensitiveData);
-    final showBrowserToken = s.isOwner;
-    final showJoined = u.createdAt > 0 && !showCards;
-    final showLastActive =
-        (u.lastLoginAt > 0 || (_info?.user.lastLoginAt ?? 0) > 0) && !showCards;
+    final roles =
+        u.roleIds.map((id) => s.roles[id]).whereType<KurierRole>().toList()
+          ..sort((b, c) => c.position.compareTo(b.position));
 
     final dmOk = a.dmOk;
     final showVolume = a.showVolume;
@@ -816,96 +750,15 @@ class _MemberMenuState extends State<_MemberMenu> {
                     child: Wrap(
                       spacing: 6,
                       runSpacing: 6,
-                      children: [
-                        for (final r in roles) RoleChip(role: r),
-                      ],
+                      children: [for (final r in roles) RoleChip(role: r)],
                     ),
                   ),
-                if (_loadingInfo && _info == null)
-                  Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 12),
-                    child: Center(
-                      child: SizedBox(
-                        width: 18,
-                        height: 18,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          color: p.muted,
-                        ),
-                      ),
-                    ),
-                  ),
-                if (showCards) ...[
-                  _InfoCard(
-                    icon: Icons.show_chart,
-                    title: l('serverActivity'),
-                    rows: [
-                      _InfoRow(
-                        icon: Icons.chat_bubble_outline,
-                        label: l('serverActivityMessages'),
-                        value: '${_info!.messages.length}',
-                      ),
-                      _InfoRow(
-                        icon: Icons.link,
-                        label: l('serverActivityLinks'),
-                        value: '${_info!.linkCount}',
-                      ),
-                      _InfoRow(
-                        icon: Icons.insert_drive_file_outlined,
-                        label: l('serverActivityFiles'),
-                        value: '${_info!.files.length}',
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-                  _InfoCard(
-                    icon: Icons.storage,
-                    title: l('storage'),
-                    rows: [
-                      _InfoRow(
-                        label: l('usedStorage'),
-                        value: formatBytes(_info!.storage.usedStorage),
-                      ),
-                      _InfoRow(
-                        label: l('quota'),
-                        value: _info!.storage.quota > 0
-                            ? formatBytes(_info!.storage.quota)
-                            : l('unlimited'),
-                      ),
-                      _InfoRow(
-                        label: l('serverActivityFiles'),
-                        value: '${_info!.storage.fileCount}',
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-                  _DetailsCard(
-                    session: s,
-                    user: _info!.user.lastLoginAt > 0 ? _info!.user : live,
-                    login: _info!.logins.isEmpty ? null : _info!.logins.first,
-                    showSensitive: showSensitive,
-                    showBrowserToken: showBrowserToken,
-                  ),
-                  const SizedBox(height: 8),
-                ] else if (showJoined || showLastActive) ...[
-                  if (showJoined)
-                    _MetaRow(
-                      icon: Icons.calendar_today_outlined,
-                      label: l('joinedServer'),
-                      value: compactRelativeTime(live.createdAt),
-                    ),
-                  if (showLastActive)
-                    _MetaRow(
-                      icon: Icons.schedule,
-                      label: l('lastActive'),
-                      value: compactRelativeTime(
-                        live.lastLoginAt > 0
-                            ? live.lastLoginAt
-                            : _info?.user.lastLoginAt ?? 0,
-                      ),
-                    ),
-                  const SizedBox(height: 4),
-                ],
+                UserAdminInfoPanel(
+                  session: s,
+                  user: live,
+                  info: _info,
+                  loading: _loadingInfo,
+                ),
                 _Item(
                   icon: Icons.person_outline,
                   label: l('viewProfile'),
@@ -938,25 +791,29 @@ class _MemberMenuState extends State<_MemberMenu> {
                     _Item(
                       icon: Icons.badge_outlined,
                       label: l('setNickname'),
-                      onTap: () => _run((ctx) => editMemberNickname(ctx, s, live)),
+                      onTap: () =>
+                          _run((ctx) => editMemberNickname(ctx, s, live)),
                     ),
                   if (showMove)
                     _Item(
                       icon: Icons.swap_horiz,
                       label: l('moveToVoice'),
-                      onTap: () => _run((ctx) => moveMemberToVoice(ctx, s, live)),
+                      onTap: () =>
+                          _run((ctx) => moveMemberToVoice(ctx, s, live)),
                     ),
                   if (showRoles)
                     _Item(
                       icon: Icons.shield_outlined,
                       label: l('manageRoles'),
-                      onTap: () => _run((ctx) => manageMemberRoles(ctx, s, live)),
+                      onTap: () =>
+                          _run((ctx) => manageMemberRoles(ctx, s, live)),
                     ),
                   if (showReset)
                     _Item(
                       icon: Icons.lock_reset,
                       label: l('resetPassword'),
-                      onTap: () => _run((ctx) => resetMemberPassword(ctx, s, live)),
+                      onTap: () =>
+                          _run((ctx) => resetMemberPassword(ctx, s, live)),
                     ),
                 ],
                 if (showModeration) ...[
@@ -966,15 +823,15 @@ class _MemberMenuState extends State<_MemberMenu> {
                     _Item(
                       icon: Icons.mic_off_outlined,
                       label: live.serverMuted ? l('unmute') : l('serverMute'),
-                      onTap: () => _run(
-                        (_) => s.muteUser(live.id, !live.serverMuted),
-                      ),
+                      onTap: () =>
+                          _run((_) => s.muteUser(live.id, !live.serverMuted)),
                     ),
                   if (showServerDeafen)
                     _Item(
                       icon: Icons.headset_off,
-                      label:
-                          live.serverDeafened ? l('undeafen') : l('serverDeafen'),
+                      label: live.serverDeafened
+                          ? l('undeafen')
+                          : l('serverDeafen'),
                       onTap: () => _run(
                         (_) => s.deafenUser(live.id, !live.serverDeafened),
                       ),
@@ -1026,303 +883,9 @@ class _MemberMenuState extends State<_MemberMenu> {
     final l = L10n.of(host.mounted ? host : context);
     _close();
     if (!host.mounted) return;
-    ScaffoldMessenger.maybeOf(host)?.showSnackBar(
-      SnackBar(content: Text(l('copied'))),
-    );
-  }
-}
-
-class _InfoCard extends StatelessWidget {
-  const _InfoCard({
-    required this.icon,
-    required this.title,
-    required this.rows,
-  });
-
-  final IconData icon;
-  final String title;
-  final List<Widget> rows;
-
-  @override
-  Widget build(BuildContext context) {
-    final p = context.p;
-    return Container(
-      padding: const EdgeInsets.fromLTRB(10, 10, 10, 8),
-      decoration: BoxDecoration(
-        color: p.rail,
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Icon(icon, size: 16, color: p.muted),
-              const SizedBox(width: 8),
-              Text(
-                title,
-                style: TextStyle(
-                  color: p.foreground,
-                  fontWeight: FontWeight.w600,
-                  fontSize: 13,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          for (final row in rows) row,
-        ],
-      ),
-    );
-  }
-}
-
-class _InfoRow extends StatelessWidget {
-  const _InfoRow({this.icon, required this.label, required this.value});
-  final IconData? icon;
-  final String label;
-  final String value;
-
-  @override
-  Widget build(BuildContext context) {
-    final p = context.p;
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4),
-      child: Row(
-        children: [
-          if (icon != null) ...[
-            Icon(icon, size: 14, color: p.muted),
-            const SizedBox(width: 8),
-          ],
-          Expanded(
-            child: Text(label, style: TextStyle(color: p.muted, fontSize: 13)),
-          ),
-          Text(value, style: TextStyle(color: p.foreground, fontSize: 13)),
-        ],
-      ),
-    );
-  }
-}
-
-class _DetailsCard extends StatefulWidget {
-  const _DetailsCard({
-    required this.session,
-    required this.user,
-    required this.login,
-    required this.showSensitive,
-    required this.showBrowserToken,
-  });
-
-  final SessionController session;
-  final KurierUser user;
-  final UserLoginInfo? login;
-  final bool showSensitive;
-  final bool showBrowserToken;
-
-  @override
-  State<_DetailsCard> createState() => _DetailsCardState();
-}
-
-class _DetailsCardState extends State<_DetailsCard> {
-  final _revealed = <String>{};
-
-  @override
-  Widget build(BuildContext context) {
-    final l = L10n.of(context);
-    final u = widget.user;
-    final login = widget.login;
-    final location = [
-      if ((login?.country ?? '').isNotEmpty) login!.country,
-      if ((login?.city ?? '').isNotEmpty) login!.city,
-    ].join(' - ');
-    final token = widget.showBrowserToken
-        ? (login?.deviceToken?.trim() ?? '')
-        : '';
-    return _InfoCard(
-      icon: Icons.assignment_outlined,
-      title: l('detailsTitle'),
-      rows: [
-        _InfoRow(label: l('userIdLabel'), value: '${u.id}'),
-        if (widget.showSensitive) ...[
-          _SecretRow(
-            label: l('identity'),
-            value: u.identity?.trim().isNotEmpty == true
-                ? u.identity!
-                : l('unknownValue'),
-            revealed: _revealed.contains('identity'),
-            onToggle: () => setState(() {
-              if (!_revealed.add('identity')) _revealed.remove('identity');
-            }),
-          ),
-          _SecretRow(
-            label: l('ipAddressLabel'),
-            value: (login?.ip ?? '').isNotEmpty
-                ? login!.ip!
-                : l('unknownValue'),
-            revealed: _revealed.contains('ip'),
-            onToggle: () => setState(() {
-              if (!_revealed.add('ip')) _revealed.remove('ip');
-            }),
-          ),
-        ],
-        if (widget.showBrowserToken)
-          _SecretRow(
-            icon: Icons.fingerprint,
-            label: l('browserTokenLabel'),
-            value: token.isNotEmpty ? token : l('unknownValue'),
-            revealed: _revealed.contains('device'),
-            onToggle: () => setState(() {
-              if (!_revealed.add('device')) _revealed.remove('device');
-            }),
-            action: token.isNotEmpty
-                ? _BanBrowserButton(
-                    onPressed: () => banMemberBrowser(
-                      context,
-                      widget.session,
-                      token,
-                    ),
-                  )
-                : null,
-          ),
-        if (widget.showSensitive)
-          _SecretRow(
-            label: l('locationLabel'),
-            value: location.isEmpty ? l('naValue') : location,
-            revealed: _revealed.contains('loc'),
-            onToggle: () => setState(() {
-              if (!_revealed.add('loc')) _revealed.remove('loc');
-            }),
-          ),
-        if (u.createdAt > 0)
-          _InfoRow(
-            icon: Icons.calendar_today_outlined,
-            label: l('joinedServer'),
-            value: compactRelativeTime(u.createdAt),
-          ),
-        if (u.lastLoginAt > 0)
-          _InfoRow(
-            icon: Icons.schedule,
-            label: l('lastActive'),
-            value: compactRelativeTime(u.lastLoginAt),
-          ),
-      ],
-    );
-  }
-}
-
-class _BanBrowserButton extends StatelessWidget {
-  const _BanBrowserButton({required this.onPressed});
-  final VoidCallback onPressed;
-
-  @override
-  Widget build(BuildContext context) {
-    final p = context.p;
-    return OutlinedButton(
-      onPressed: onPressed,
-      style: OutlinedButton.styleFrom(
-        visualDensity: VisualDensity.compact,
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-        minimumSize: Size.zero,
-        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-        foregroundColor: p.foreground,
-        side: BorderSide(color: p.divider),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
-      ),
-      child: Text(
-        L10n.of(context)('banBrowserBtn'),
-        style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
-      ),
-    );
-  }
-}
-
-class _SecretRow extends StatelessWidget {
-  const _SecretRow({
-    this.icon,
-    required this.label,
-    required this.value,
-    required this.revealed,
-    required this.onToggle,
-    this.action,
-  });
-
-  final IconData? icon;
-  final String label;
-  final String value;
-  final bool revealed;
-  final VoidCallback onToggle;
-  final Widget? action;
-
-  @override
-  Widget build(BuildContext context) {
-    final p = context.p;
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4),
-      child: Row(
-        children: [
-          if (icon != null) ...[
-            Icon(icon, size: 14, color: p.muted),
-            const SizedBox(width: 6),
-          ],
-          Expanded(
-            child: Text(
-              label,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(color: p.muted, fontSize: 13),
-            ),
-          ),
-          Flexible(
-            child: Text(
-              revealed ? value : '***',
-              overflow: TextOverflow.ellipsis,
-              maxLines: 1,
-              softWrap: false,
-              style: TextStyle(color: p.foreground, fontSize: 13),
-            ),
-          ),
-          if (action != null) ...[const SizedBox(width: 6), action!],
-          const SizedBox(width: 4),
-          InkWell(
-            onTap: onToggle,
-            child: Icon(
-              revealed ? Icons.visibility_off_outlined : Icons.visibility_outlined,
-              size: 16,
-              color: p.muted,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _MetaRow extends StatelessWidget {
-  const _MetaRow({
-    required this.icon,
-    required this.label,
-    required this.value,
-  });
-
-  final IconData icon;
-  final String label;
-  final String value;
-
-  @override
-  Widget build(BuildContext context) {
-    final p = context.p;
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
-      child: Row(
-        children: [
-          Icon(icon, size: 16, color: p.muted),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(label, style: TextStyle(color: p.muted, fontSize: 13)),
-          ),
-          Text(value, style: TextStyle(color: p.foreground, fontSize: 13)),
-        ],
-      ),
-    );
+    ScaffoldMessenger.maybeOf(
+      host,
+    )?.showSnackBar(SnackBar(content: Text(l('copied'))));
   }
 }
 

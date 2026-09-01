@@ -168,7 +168,7 @@ class _Desktop extends StatelessWidget {
         child: EmptyHint(L10n.of(context)('selectChannel')),
       );
     }
-    if (channel!.isVoice) {
+    if (channel!.opensAsVoiceStage) {
       return VoiceStage(
         session: s,
         channel: channel!,
@@ -271,7 +271,7 @@ class _Tablet extends StatelessWidget {
         child: EmptyHint(L10n.of(context)('selectChannel')),
       );
     }
-    if (channel!.isVoice) {
+    if (channel!.opensAsVoiceStage) {
       return VoiceStage(
         session: s,
         channel: channel!,
@@ -389,7 +389,7 @@ class _Phone extends StatelessWidget {
     if (channel == null) {
       return ColoredBox(color: context.p.background);
     }
-    if (channel!.isVoice) {
+    if (channel!.opensAsVoiceStage) {
       return VoiceStage(
         session: s,
         channel: channel!,
