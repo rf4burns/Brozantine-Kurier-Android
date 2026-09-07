@@ -1,0 +1,25 @@
+---
+description: Build and publish Kurier Android APKs to the installer GitHub repo when asked to release
+alwaysApply: true
+---
+
+# Android APK releases
+
+Distribution repo: [rf4burns/Kurier-Android-Installer](https://github.com/rf4burns/Kurier-Android-Installer)
+
+When Gordon asks to **release** the Android app / APK:
+
+1. Gather client-facing changelog bullets (required). Use what he gives; otherwise take the current version notes from `lib/app/release_notes.dart`. Placeholders like `Build 1.0.6.` are not allowed.
+2. From this repo root, bump and build:
+   `powershell -File tool/build_android.ps1 -Notes "bullet one. | bullet two."`
+   Use `-NoBump` only if he asks to rebuild the same version.
+3. Copy `build/app/outputs/flutter-apk/app-release.apk` to `Kurier-{x.y.z}.apk` (version from `pubspec.yaml`, no `+build`).
+4. Publish a GitHub Release on `rf4burns/Kurier-Android-Installer` (tag `v{x.y.z}`, title `Kurier Android {x.y.z}`). Attach that APK. Put the changelog in the release body as markdown bullets.
+5. Do not commit APK binaries into this Flutter repo or into the installer git tree. Releases hold the APKs.
+6. Do not rewrite the installer README unless he asks. Source of truth stays this tree; do not commit in Brozantine-Kurier-Android.
+
+Example:
+
+```powershell
+gh release create "v1.0.9" "Kurier-1.0.9.apk" --repo rf4burns/Kurier-Android-Installer --title "Kurier Android 1.0.9" --notes "## Changelog`n- First bullet.`n- Second bullet."
+```
