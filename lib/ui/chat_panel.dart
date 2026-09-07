@@ -31,6 +31,7 @@ import 'reactions_viewer.dart';
 import 'search_dialog.dart';
 import 'shared.dart';
 import 'voice_stage.dart';
+import 'web_file_input.dart';
 
 String _channelTitle(SessionController s, KurierChannel channel) {
   if (!channel.isDm) return channel.name;
@@ -1495,11 +1496,19 @@ class _ComposeBarState extends State<ComposeBar> {
                     onPressed: () => _insertEmoji(context, s),
                   ),
                   if (s.can(Permission.uploadFiles))
-                    CompactIconButton(
-                      icon: Icons.attach_file,
-                      iconSize: 20,
+                    overlayAttachControl(
                       tooltip: l('upload'),
-                      onPressed: () => _attach(s),
+                      onPicked: (files) async {
+                        if (files.isEmpty) {
+                          if (!context.mounted) return;
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(content: Text(l('uploadPickerFailed'))),
+                          );
+                          return;
+                        }
+                        await s.sendFiles(files);
+                      },
+                      onNativePick: () => _attach(s),
                     ),
                 ],
               ),

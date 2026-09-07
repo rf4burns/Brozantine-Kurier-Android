@@ -67,6 +67,7 @@ class PlatformBridge {
   static void setKeepScreenAwake(bool on) {}
   static bool consumerTrackLive(String key) => false;
   static bool get audioProducerLive => false;
+  static bool producerLive(String kind) => false;
   static void closeConsumer(String key) {}
   static void closeAll() {}
   static Future<void> restartIce(

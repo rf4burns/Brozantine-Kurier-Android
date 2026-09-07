@@ -501,12 +501,12 @@ class PlatformBridge {
       _cam = null;
       _videoStreams.remove('local:video');
     }
-    if (kind == 'screen' || kind == 'screen_audio') {
-      if (kind == 'screen') {
-        _screen?.getTracks().forEach((t) => t.stop());
-        _screen = null;
-        _videoStreams.remove('local:screen');
-      }
+    if (kind == 'screen') {
+      _screen?.getTracks().forEach((t) => t.stop());
+      _screen = null;
+      _videoStreams.remove('local:screen');
+    } else if (kind == 'screen_audio') {
+      _screen?.getAudioTracks().forEach((t) => t.stop());
     }
   }
 
@@ -537,8 +537,10 @@ class PlatformBridge {
     return c != null && !c.closed && c.track.enabled;
   }
 
-  static bool get audioProducerLive {
-    final p = _producers['audio'];
+  static bool get audioProducerLive => producerLive('audio');
+
+  static bool producerLive(String kind) {
+    final p = _producers[kind];
     return p != null && !p.closed;
   }
 

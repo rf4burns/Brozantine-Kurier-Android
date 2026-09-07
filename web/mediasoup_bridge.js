@@ -456,10 +456,11 @@
 
     _startMeter(key, stream) {
       this._stopMeter(key, false);
-      if (!stream) return;
+      if (!stream || !stream.getAudioTracks || !stream.getAudioTracks().length) {
+        return;
+      }
       try {
         const clonedTracks = stream.getAudioTracks().map((t) => t.clone());
-        if (!clonedTracks.length) return;
         const meterStream = new MediaStream(clonedTracks);
         const ctx = this._ensureAudioCtx();
         const analyser = ctx.createAnalyser();
@@ -759,30 +760,49 @@
     async getUserMedia(audio, video, deviceId, constraintsJson) {
       return this._run(async () => {
       const extra = parseJson(constraintsJson);
-      const constraints = {};
-      if (audio) constraints.audio = this._audioConstraints(deviceId, extra);
-      if (video) {
-        constraints.video = { width: { ideal: 1280 }, height: { ideal: 720 } };
-        const cam = extra.videoDeviceId || this._cameraDeviceId;
-        if (cam) constraints.video.deviceId = { exact: cam };
-      }
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia(constraints);
-        if (audio) {
-          this._setMicStream(stream);
-        }
+      const timeoutMs = this.isIos() ? 8000 : 12000;
+      const withTimeout = (work) =>
+        Promise.race([
+          work,
+          new Promise((_, reject) =>
+            setTimeout(() => reject(new Error("getUserMedia timed out")), timeoutMs)
+          ),
+        ]);
+      const applyStream = (stream) => {
+        if (audio) this._setMicStream(stream);
         if (video) {
           this.localStreams.cam = stream;
           this._rebindMedia("local:video");
         }
         return stream.id;
+      };
+      const detailed = {};
+      if (audio) detailed.audio = this._audioConstraints(deviceId, extra);
+      if (video) {
+        detailed.video = { width: { ideal: 1280 }, height: { ideal: 720 } };
+        const cam = extra.videoDeviceId || this._cameraDeviceId;
+        if (cam) detailed.video.deviceId = { exact: cam };
+      }
+      try {
+        return applyStream(await withTimeout(navigator.mediaDevices.getUserMedia(detailed)));
       } catch (err) {
         if (deviceId && audio) {
-          const stream = await navigator.mediaDevices.getUserMedia({
-            audio: this._audioConstraints(null, extra),
-          });
-          this._setMicStream(stream);
-          return stream.id;
+          try {
+            const fallback = { audio: this._audioConstraints(null, extra) };
+            if (video) fallback.video = detailed.video;
+            return applyStream(
+              await withTimeout(navigator.mediaDevices.getUserMedia(fallback))
+            );
+          } catch (_) {}
+        }
+        if (audio && this.isIos()) {
+          try {
+            const simple = { audio: true };
+            if (video) simple.video = true;
+            return applyStream(
+              await withTimeout(navigator.mediaDevices.getUserMedia(simple))
+            );
+          } catch (_) {}
         }
         throw err;
       }
@@ -957,14 +977,37 @@
       });
     },
 
+    _stopStream(stream) {
+      if (!stream || !stream.getTracks) return;
+      stream.getTracks().forEach((t) => {
+        try {
+          t.stop();
+        } catch (_) {}
+      });
+    },
+
+    async _replaceProducerTrack(kind, track) {
+      const producer = this.producers[kind];
+      if (!producer || producer.closed || !track) return false;
+      if (typeof producer.replaceTrack !== "function") return false;
+      try {
+        await producer.replaceTrack({ track });
+        return true;
+      } catch (err) {
+        console.warn("replace " + kind + " track failed", err);
+        return false;
+      }
+    },
+
     async getDisplayMedia(withAudio) {
       return this._run(async () => {
+      const wantAudio = !!withAudio;
       const video = {
         width: { ideal: 1920 },
         height: { ideal: 1080 },
         frameRate: { ideal: 30 },
       };
-      const audio = withAudio
+      const audio = wantAudio
         ? {
             echoCancellation: false,
             noiseSuppression: false,
@@ -979,6 +1022,10 @@
         surfaceSwitching: "include",
         monitorTypeSurfaces: "include",
       };
+      if (wantAudio) {
+        preferred.systemAudio = "include";
+        preferred.windowAudio = "window";
+      }
       let stream;
       try {
         stream = await navigator.mediaDevices.getDisplayMedia(preferred);
@@ -986,8 +1033,15 @@
         if (isUserMediaAbort(err)) throw err;
         stream = await navigator.mediaDevices.getDisplayMedia({ video, audio });
       }
+      const prev = this.localStreams.screen;
       this.localStreams.screen = stream;
       this._watchScreenTrack(stream);
+      await this._replaceProducerTrack("screen", stream.getVideoTracks()[0]);
+      const audioTrack = stream.getAudioTracks()[0];
+      if (audioTrack) {
+        await this._replaceProducerTrack("screen_audio", audioTrack);
+      }
+      if (prev && prev !== stream) this._stopStream(prev);
       this._rebindMedia("local:screen");
       return stream.id;
       });
@@ -1085,13 +1139,11 @@
       const stream = new MediaStream([consumer.track]);
       if (consumer.track.kind === "audio") {
         this._attachStream(key, stream, "audio");
-        this._startMeter(key, stream);
         this._ensureAudioCtx();
         const reattach = () => {
           if (this.consumers[key] !== consumer) return;
-          if (!this._usesHtmlAudioPlayback()) {
-            this._attachVoiceGraph(key, stream);
-          }
+          this._startMeter(key, stream);
+          this._promoteRemoteAudio(key, stream);
           this._ensureAudioCtx();
           this.resumePlayback();
         };
@@ -1178,33 +1230,54 @@
         document.body.appendChild(el);
       }
       el.srcObject = stream;
-      if (kind === "audio") {
-        this._stopDummyTracks(key);
-        if (!htmlAudio && !this._usesSinkRelay()) {
-          const dummy = stream.getAudioTracks().map((t) => t.clone());
-          this._dummyTracks[key] = dummy;
-          el.srcObject = dummy.length ? new MediaStream(dummy) : stream;
-        }
-      }
+      if (kind === "audio") this._stopDummyTracks(key);
       this._applySink(el).catch(() => {});
-      const playbackStream = this._isPlaybackKey(key);
-      const usedGraph =
-        kind === "audio" && !htmlAudio ? this._attachVoiceGraph(key, stream) : false;
-      if (usedGraph) {
-        el.muted = this._usesSinkRelay();
-        el.volume = 0;
-      } else if (kind === "audio") {
-        el.muted = playbackStream || this._volumes[key] === 0;
-        el.volume = playbackStream
-          ? 0
-          : typeof this._volumes[key] === "number"
-            ? this._volumes[key]
-            : 1;
+      if (kind === "audio") {
+        this._applyHtmlAudioVolume(key, true);
       } else {
         el.muted = true;
       }
       this._playMedia(el);
       el.addEventListener("canplay", () => this._playMedia(el), { once: true });
+    },
+
+    _audioTrackUnmuted(stream) {
+      const track =
+        stream && stream.getAudioTracks && stream.getAudioTracks()[0];
+      return !!(track && !track.muted);
+    },
+
+    _applyHtmlAudioVolume(key, audible) {
+      const el = document.getElementById("kurier-media-" + key);
+      if (!el) return;
+      const playbackStream = this._isPlaybackKey(key);
+      const stored = this._volumes[key];
+      const vol = typeof stored === "number" ? stored : 1;
+      if (audible) {
+        el.muted = playbackStream || vol === 0;
+        el.volume = playbackStream ? 0 : vol;
+        this._playMedia(el);
+      } else {
+        el.muted = this._usesSinkRelay();
+        el.volume = 0;
+        try {
+          el.pause();
+        } catch (_) {}
+      }
+    },
+
+    _promoteRemoteAudio(key, stream) {
+      if (this._usesHtmlAudioPlayback()) {
+        this._applyHtmlAudioVolume(key, true);
+        return false;
+      }
+      if (!this._audioTrackUnmuted(stream)) {
+        this._applyHtmlAudioVolume(key, true);
+        return false;
+      }
+      const usedGraph = this._attachVoiceGraph(key, stream);
+      this._applyHtmlAudioVolume(key, !usedGraph);
+      return usedGraph;
     },
 
     setConsumerVolume(key, volume) {
@@ -1214,15 +1287,10 @@
       if (graph && graph.gain) {
         graph.gain.gain.value = v;
       }
-      const el = document.getElementById("kurier-media-" + key);
-      if (!el) return;
-      if (graph && !this._usesHtmlAudioPlayback()) {
-        el.volume = 0;
-        el.muted = this._usesSinkRelay();
-      } else {
-        el.volume = v;
-        el.muted = v === 0;
-      }
+      this._applyHtmlAudioVolume(
+        key,
+        !(graph && !this._usesHtmlAudioPlayback())
+      );
     },
 
     closeProducer(kind) {
@@ -1234,12 +1302,18 @@
         delete this.producers[kind];
       }
       if (kind === "video" && this.localStreams.cam) {
-        this.localStreams.cam.getTracks().forEach((t) => t.stop());
+        this._stopStream(this.localStreams.cam);
         this.localStreams.cam = null;
       }
-      if ((kind === "screen" || kind === "screen_audio") && this.localStreams.screen) {
-        this.localStreams.screen.getTracks().forEach((t) => t.stop());
+      if (kind === "screen" && this.localStreams.screen) {
+        this._stopStream(this.localStreams.screen);
         this.localStreams.screen = null;
+      } else if (kind === "screen_audio" && this.localStreams.screen) {
+        this.localStreams.screen.getAudioTracks().forEach((t) => {
+          try {
+            t.stop();
+          } catch (_) {}
+        });
       }
     },
 
@@ -1557,12 +1631,7 @@
 
     consumerTrackLive(key) {
       const c = this.consumers[key];
-      return !!(
-        c &&
-        c.track &&
-        c.track.readyState === "live" &&
-        !c.track.muted
-      );
+      return !!(c && !c.closed && c.track && c.track.readyState === "live");
     },
 
     audioProducerLive() {
@@ -1571,6 +1640,11 @@
       const stream = this.localStreams.mic;
       const track = (stream && stream.getAudioTracks()[0]) || p.track;
       return !!(track && track.readyState === "live");
+    },
+
+    producerLive(kind) {
+      const p = this.producers[kind];
+      return !!(p && !p.closed);
     },
 
     _playMedia(el) {
@@ -1788,8 +1862,9 @@
       Object.keys(this.consumers).forEach((key) => {
         const c = this.consumers[key];
         if (!c || !c.track || c.track.kind !== "audio") return;
+        if (c.track.muted) return;
         if (!force && this._gains[key]) return;
-        this._attachVoiceGraph(key, new MediaStream([c.track]));
+        this._promoteRemoteAudio(key, new MediaStream([c.track]));
       });
     },
 
@@ -1814,18 +1889,43 @@
       return !!(el && el.srcObject && !el.paused && !el.ended && el.readyState > 0);
     },
 
-    _playbackSnapshot() {
+    async _inboundAudioPackets(consumer) {
+      if (!consumer || typeof consumer.getStats !== "function") return 0;
+      try {
+        const report = await consumer.getStats();
+        let packets = 0;
+        if (report && typeof report.forEach === "function") {
+          report.forEach((stat) => {
+            if (stat.type !== "inbound-rtp") return;
+            const kind = stat.kind || stat.mediaType || "";
+            if (kind && kind !== "audio") return;
+            packets += stat.packetsReceived || 0;
+          });
+        }
+        return packets;
+      } catch (_) {
+        return 0;
+      }
+    },
+
+    async _playbackSnapshot() {
       const liveAudioKeys = [];
       const graphKeys = [];
       const playingKeys = [];
-      Object.keys(this.consumers).forEach((key) => {
+      const mutedAudioKeys = [];
+      const audioPackets = {};
+      const keys = Object.keys(this.consumers);
+      for (let i = 0; i < keys.length; i++) {
+        const key = keys[i];
         const c = this.consumers[key];
-        if (!c || !c.track || c.track.kind !== "audio") return;
+        if (!c || !c.track || c.track.kind !== "audio") continue;
         if (c.track.readyState === "live") liveAudioKeys.push(key);
+        if (c.track.muted) mutedAudioKeys.push(key);
         if (this._gains[key]) graphKeys.push(key);
         const el = document.getElementById("kurier-media-" + key);
         if (this._elementPlaying(el)) playingKeys.push(key);
-      });
+        audioPackets[key] = await this._inboundAudioPackets(c);
+      }
       return {
         ctxRunning: !!(this._audioCtx && this._audioCtx.state === "running"),
         keepAlive: !!(this._keepAlive && this._keepAlive.osc),
@@ -1834,17 +1934,31 @@
         liveAudioKeys: liveAudioKeys,
         graphKeys: graphKeys,
         playingKeys: playingKeys,
+        mutedAudioKeys: mutedAudioKeys,
+        audioPackets: audioPackets,
       };
     },
 
     async playbackHealthy() {
-      return this._run(async () => JSON.stringify(this._playbackSnapshot()));
+      return this._run(async () => JSON.stringify(await this._playbackSnapshot()));
+    },
+
+    _resumePausedConsumers() {
+      Object.keys(this.consumers).forEach((key) => {
+        const c = this.consumers[key];
+        if (!c || c.closed || !c.paused) return;
+        try {
+          const p = c.resume();
+          if (p && typeof p.catch === "function") p.catch(() => {});
+        } catch (_) {}
+      });
     },
 
     resumePlayback() {
       if (this._resumingPlayback) return;
       this._resumingPlayback = true;
       try {
+        this._resumePausedConsumers();
         if (this._audioCtx) this._ensureAudioCtx();
         if (this.sendTransport || this.recvTransport || this._keepAlive) {
           this._startKeepAlive();

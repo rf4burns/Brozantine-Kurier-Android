@@ -94,6 +94,9 @@ external JSBoolean _consumerTrackLive(JSString key);
 @JS('KurierMediasoup.audioProducerLive')
 external JSBoolean _audioProducerLive();
 
+@JS('KurierMediasoup.producerLive')
+external JSBoolean _producerLive(JSString kind);
+
 @JS('KurierMediasoup.closeConsumer')
 external void _closeConsumer(JSString key);
 
@@ -321,6 +324,8 @@ class PlatformBridge {
   static bool consumerTrackLive(String key) =>
       available && _consumerTrackLive(key.toJS).toDart;
   static bool get audioProducerLive => available && _audioProducerLive().toDart;
+  static bool producerLive(String kind) =>
+      available && _producerLive(kind.toJS).toDart;
   static void closeConsumer(String key) => _closeConsumer(key.toJS);
   static void closeAll() => _closeAll();
 

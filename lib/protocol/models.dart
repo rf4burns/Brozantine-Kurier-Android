@@ -571,15 +571,27 @@ class KurierChannel {
     return asOptionalString(voiceStatus) ?? asOptionalString(topic);
   }
 
-  factory KurierChannel.fromJson(Map<String, dynamic> json) {
+  factory KurierChannel.fromJson(
+    Map<String, dynamic> json, {
+    bool overlay = false,
+  }) {
     final topic = asOptionalString(json['topic']);
+    final name = '${json['name'] ?? ''}';
+    var isDm = asBool(json['isDm']);
+    if (overlay) {
+      isDm =
+          isDm ||
+          asBool(json['isDM']) ||
+          asBool(json['is_dm']) ||
+          name.startsWith('DM - ');
+    }
     return KurierChannel(
       id: asInt(json['id']) ?? 0,
       type: '${json['type'] ?? 'TEXT'}',
-      name: '${json['name'] ?? ''}',
+      name: name,
       topic: topic,
       private: asBool(json['private']),
-      isDm: asBool(json['isDm']),
+      isDm: isDm,
       position: asInt(json['position']) ?? 0,
       categoryId: asInt(json['categoryId']),
       voiceStatus:
@@ -1133,7 +1145,10 @@ class JoinPayload {
   final Map<String, dynamic> externalStreamsMap;
   final bool showWelcomeDialog;
 
-  factory JoinPayload.fromJson(Map<String, dynamic> json) {
+  factory JoinPayload.fromJson(
+    Map<String, dynamic> json, {
+    bool overlay = false,
+  }) {
     final perms = parseChannelPermissions(json['channelPermissions']);
     final reads = <int, int>{};
     final rawReads = json['readStates'];
@@ -1159,7 +1174,12 @@ class JoinPayload {
       channels:
           (json['channels'] as List?)
               ?.whereType<Map>()
-              .map((e) => KurierChannel.fromJson(Map<String, dynamic>.from(e)))
+              .map(
+                (e) => KurierChannel.fromJson(
+                  Map<String, dynamic>.from(e),
+                  overlay: overlay,
+                ),
+              )
               .toList() ??
           const [],
       users:

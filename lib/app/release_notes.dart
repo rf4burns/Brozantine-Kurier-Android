@@ -15,6 +15,24 @@ class ThirdPartyProgram {
 /// Latest first. English only — per-build copy is not sent through l10n.
 const releaseNotes = <ReleaseNote>[
   ReleaseNote(
+    version: '1.0.9',
+    notes: [
+      'Web overlay: direct messages open as chat instead of Join Voice.',
+      'Web overlay: joining voice no longer sticks on Connecting.',
+      'Web overlay: iOS Safari can send photos and attachments from chat.',
+    ],
+  ),
+
+  ReleaseNote(
+    version: '1.0.8',
+    notes: [
+      'Direct messages open as chat instead of the voice stage.',
+      'Type @ to mention people from a suggestion list.',
+      'Owners and admins can open Details on a profile.',
+    ],
+  ),
+
+  ReleaseNote(
     version: '1.0.7',
     notes: [
       'Direct messages open as chat instead of the voice stage.',

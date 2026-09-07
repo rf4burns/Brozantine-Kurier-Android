@@ -122,6 +122,23 @@ class SessionController extends ChangeNotifier {
   @visibleForTesting
   Duration focusAwayDebounce = presenceFocusAwayDebounce;
 
+  /// Web overlay client. Tests set this; production uses [kIsWeb].
+  @visibleForTesting
+  bool overlayClient = kIsWeb;
+
+  /// Overlay-only join hang limits. Tests may shorten these.
+  @visibleForTesting
+  Duration overlayGetUserMediaTimeout = const Duration(seconds: 8);
+
+  @visibleForTesting
+  Duration overlayVoiceJoinTimeout = const Duration(seconds: 20);
+
+  /// Overlay test seam that replaces [PlatformBridge.getUserMedia].
+  @visibleForTesting
+  Future<void> Function()? overlayGetUserMediaHook;
+
+  int _voiceJoinGeneration = 0;
+
   void refresh() => notifyListeners();
 
   int? connectedVoiceChannelId;
@@ -162,6 +179,16 @@ class SessionController extends ChangeNotifier {
   Timer? _recoverTimer;
   DateTime? _ignoreOwnVoiceLeaveUntil;
   final _autoRejoinAt = <DateTime>[];
+  final _consumeInflight = <String, Future<void>>{};
+  final _pendingConsumes = <String, ({String kind, int remoteId})>{};
+  bool _canConsumeRemote = false;
+  final _audioPacketCounts = <String, int>{};
+  final _audioStallSince = <String, DateTime>{};
+  final _audioDidLightRepair = <String>{};
+  final _audioDidInaudibleLight = <String>{};
+  final _audioLastReplaceAt = <String, DateTime>{};
+  final _audioConsumerCreatedAt = <String, DateTime>{};
+  final _audioMissingSince = <String, DateTime>{};
 
   bool get simulcastEnabled => asBool(publicSettings['webRtcSimulcastEnabled']);
 
@@ -459,7 +486,7 @@ class SessionController extends ChangeNotifier {
         if (serverPassword != null) 'password': serverPassword,
       });
       final rawMap = Map<String, dynamic>.from(raw as Map);
-      join = JoinPayload.fromJson(rawMap);
+      join = JoinPayload.fromJson(rawMap, overlay: overlayClient);
       _applyJoin(join!);
       await _adoptServerKlipy(rawMap);
       await _subscribeAll();
@@ -471,6 +498,7 @@ class SessionController extends ChangeNotifier {
       } catch (_) {
         dms = [];
       }
+      _stampOverlayDms();
       phase = SessionPhase.ready;
       final last = store.lastChannel(host);
       final lastChannel = last == null ? null : channels[last];
@@ -578,7 +606,7 @@ class SessionController extends ChangeNotifier {
         'handshakeHash': hs['handshakeHash'],
       });
       final rawMap = Map<String, dynamic>.from(raw as Map);
-      join = JoinPayload.fromJson(rawMap);
+      join = JoinPayload.fromJson(rawMap, overlay: overlayClient);
       _applyJoin(join!);
       await _subscribeAll();
       await androidOnLogin(
@@ -699,6 +727,7 @@ class SessionController extends ChangeNotifier {
       ..addEntries(j.emojis.map((e) => MapEntry(e.id, e)));
     _parseVoiceMap(j.voiceMap);
     _parseExternal(j.externalStreamsMap);
+    _stampOverlayDms();
     unawaited(_pushPresence());
     final host = hosts.where((h) => h.host == activeHost).firstOrNull;
     if (host != null) {
@@ -1065,7 +1094,13 @@ class SessionController extends ChangeNotifier {
   }
 
   void _upsertChannel(dynamic d) {
-    final c = KurierChannel.fromJson(_map(d));
+    final c = KurierChannel.fromJson(_map(d), overlay: overlayClient);
+    if (overlayClient) {
+      final prev = channels[c.id];
+      if ((prev?.isDm ?? false) || _listedOverlayDm(c.id)) {
+        c.isDm = true;
+      }
+    }
     channels[c.id] = c;
     _syncSelectedChannelAccess();
     notifyListeners();
@@ -1190,8 +1225,11 @@ class SessionController extends ChangeNotifier {
         voiceState != 'connecting') {
       _resetVoiceLocal();
       unawaited(_pushPresence());
-    } else if (uid != ownUserId && cid == connectedVoiceChannelId) {
+    } else if (uid != null &&
+        uid != ownUserId &&
+        cid == connectedVoiceChannelId) {
       PlatformBridge.playSound(KurierSoundType.remoteUserLeftVoiceChannel);
+      _closeConsumersForRemote(uid);
     }
     notifyListeners();
   }
@@ -1201,7 +1239,8 @@ class SessionController extends ChangeNotifier {
     final cid = asInt(m['channelId']);
     final uid = asInt(m['userId']);
     if (cid == null || uid == null) return;
-    final prevSharing = voiceMap[cid]?[uid]?.sharingScreen ?? false;
+    final prev = voiceMap[cid]?[uid];
+    final prevSharing = prev?.sharingScreen ?? false;
     final next = VoiceUserState.fromJson(
       m['state'] is Map ? Map<String, dynamic>.from(m['state'] as Map) : m,
     );
@@ -1211,6 +1250,28 @@ class SessionController extends ChangeNotifier {
         PlatformBridge.playSound(KurierSoundType.remoteUserStartedScreenshare);
       } else if (!next.sharingScreen && prevSharing) {
         PlatformBridge.playSound(KurierSoundType.remoteUserStoppedScreenshare);
+      }
+      final mapKey = '$uid:${StreamKind.audio}';
+      final existing = consumerKeys[mapKey];
+      if (shouldConsumeOnRemoteUnmute(
+        wasMicOpen: prev != null && !prev.micMuted && !prev.serverMuted,
+        isMicOpen: !next.micMuted && !next.serverMuted,
+        isOwnUser: false,
+        inCurrentChannel: true,
+        hasLiveConsumer:
+            existing != null && PlatformBridge.consumerTrackLive(existing),
+      )) {
+        unawaited(() async {
+          try {
+            await consumeProducer(
+              kind: StreamKind.audio,
+              remoteId: uid,
+              replace: true,
+            );
+          } catch (e) {
+            _log('unmute consume $uid: $e');
+          }
+        }());
       }
     }
     notifyListeners();
@@ -1248,6 +1309,10 @@ class SessionController extends ChangeNotifier {
       notifyListeners();
       return;
     }
+    if (!_canConsumeRemote) {
+      _pendingConsumes['$remoteId:$kind'] = (kind: kind, remoteId: remoteId);
+      return;
+    }
     try {
       await consumeProducer(kind: kind, remoteId: remoteId, replace: true);
     } catch (e) {
@@ -1260,9 +1325,7 @@ class SessionController extends ChangeNotifier {
     final kind = '${m['kind']}';
     final remoteId = voiceEventUserId(m) ?? 0;
     final key = '$remoteId:$kind';
-    final stored = consumerKeys.remove(key);
-    volumes.remove(key);
-    if (stored != null) PlatformBridge.closeConsumer(stored);
+    _dropConsumer(key);
     if (kind == StreamKind.screen || kind == StreamKind.externalVideo) {
       watchingStreams.remove(
         StreamKind.watchKey(
@@ -1343,9 +1406,49 @@ class SessionController extends ChangeNotifier {
           .whereType<Map>()
           .map((e) => DmConversation.fromJson(Map<String, dynamic>.from(e)))
           .toList();
+      _stampOverlayDms();
       notifyListeners();
     } catch (_) {}
   }
+
+  bool _listedOverlayDm(int channelId) =>
+      overlayClient && dms.any((d) => d.channelId == channelId);
+
+  bool isDmChannel(KurierChannel? channel, [int? channelId]) {
+    if (channel?.isDm == true) return true;
+    final id = channel?.id ?? channelId;
+    if (id == null) return false;
+    return _listedOverlayDm(id);
+  }
+
+  bool opensAsVoiceStage(KurierChannel? channel) {
+    if (channel == null) return false;
+    if (!overlayClient) return channel.opensAsVoiceStage;
+    return channel.isVoice && !isDmChannel(channel);
+  }
+
+  void _stampOverlayDms() {
+    if (!overlayClient) return;
+    for (final dm in dms) {
+      final existing = channels[dm.channelId];
+      if (existing != null) {
+        existing.isDm = true;
+        continue;
+      }
+      final peer = users[dm.userId]?.displayName;
+      channels[dm.channelId] = KurierChannel(
+        id: dm.channelId,
+        type: 'VOICE',
+        name: peer ?? 'DM',
+        position: 0,
+        private: true,
+        isDm: true,
+      );
+    }
+  }
+
+  @visibleForTesting
+  void stampOverlayDms() => _stampOverlayDms();
 
   KurierUser? get me => users[ownUserId];
 
@@ -1639,18 +1742,19 @@ class SessionController extends ChangeNotifier {
   }
 
   Future<void> selectChannel(int id) async {
+    if (overlayClient) _stampOverlayDms();
     if (selectedChannelId == id) {
-      showingDms = channels[id]?.isDm ?? false;
+      showingDms = isDmChannel(channels[id], id);
       final ch = channels[id];
       _rememberTextChannel(ch);
-      if (ch?.opensAsVoiceStage == true &&
+      if (opensAsVoiceStage(ch) &&
           !(connectedVoiceChannelId == id && voiceState == 'connected')) {
         await joinVoice(id);
       }
       return;
     }
     final previous = selectedChannelId;
-    showingDms = channels[id]?.isDm ?? false;
+    showingDms = isDmChannel(channels[id], id);
     selectedChannelId = id;
     threadParentId = null;
     replyTo = null;
@@ -1660,13 +1764,13 @@ class SessionController extends ChangeNotifier {
     final ch = channels[id];
     _rememberTextChannel(ch);
     notifyListeners();
-    if (ch?.isText == true || ch?.isDm == true) {
+    if (ch?.isText == true || isDmChannel(ch, id)) {
       await loadMessages(id);
       try {
         await trpc?.mutate('channels.markAsRead', {'channelId': id});
         readStates[id] = 0;
       } catch (_) {}
-    } else if (ch?.opensAsVoiceStage == true) {
+    } else if (opensAsVoiceStage(ch)) {
       await joinVoice(id);
     }
     notifyListeners();
@@ -2224,6 +2328,9 @@ class SessionController extends ChangeNotifier {
     });
   }
 
+  bool _isStaleVoiceJoin(int generation) =>
+      overlayClient && generation != 0 && generation != _voiceJoinGeneration;
+
   Future<void> joinVoice(int channelId) async {
     if (connectedVoiceChannelId == channelId && voiceState == 'connected') {
       return;
@@ -2236,6 +2343,10 @@ class SessionController extends ChangeNotifier {
     if (connectedVoiceChannelId != null &&
         connectedVoiceChannelId != channelId) {
       await leaveVoice();
+    }
+    if (overlayClient) {
+      await _joinVoiceOverlay(channelId);
+      return;
     }
     voiceState = 'connecting';
     voiceError = null;
@@ -2293,11 +2404,83 @@ class SessionController extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> _establishVoice(int channelId, {required bool haveMic}) async {
+  Future<void> _joinVoiceOverlay(int channelId) async {
+    final gen = ++_voiceJoinGeneration;
+    voiceState = 'connecting';
+    voiceError = null;
+    notifyListeners();
+    try {
+      await _joinVoiceOverlayBody(
+        channelId,
+        gen,
+      ).timeout(overlayVoiceJoinTimeout);
+    } on TimeoutException {
+      if (_isStaleVoiceJoin(gen)) return;
+      await _failVoice(StateError('Voice join timed out'), generation: gen);
+    } catch (e) {
+      if (_isStaleVoiceJoin(gen)) return;
+      await _failVoice(e, generation: gen);
+    }
+    if (_isStaleVoiceJoin(gen)) return;
+    notifyListeners();
+  }
+
+  Future<void> _joinVoiceOverlayBody(int channelId, int gen) async {
+    unawaited(PlatformBridge.unlockAudio());
+    var haveMic = false;
+    try {
+      final media =
+          overlayGetUserMediaHook ??
+          () => PlatformBridge.getUserMedia(
+            audio: true,
+            deviceId: PlatformBridge.isIos ? null : store.micDevice,
+            audioConstraints: store.audioConstraints(),
+          );
+      await media().timeout(overlayGetUserMediaTimeout);
+      haveMic = true;
+    } catch (e) {
+      _log('getUserMedia: $e');
+    }
+    if (_isStaleVoiceJoin(gen)) return;
+    try {
+      await PlatformBridge.ensureReady();
+    } catch (e) {
+      if (_isStaleVoiceJoin(gen)) return;
+      await _failVoice(e, generation: gen);
+      return;
+    }
+    if (_isStaleVoiceJoin(gen)) return;
+    try {
+      await _establishVoice(channelId, haveMic: haveMic, generation: gen);
+    } catch (e) {
+      if (_isStaleVoiceJoin(gen)) return;
+      if (isAlreadyInVoiceError(e)) {
+        try {
+          await trpc?.mutate('voice.leave');
+        } catch (_) {}
+        _resetVoiceLocal();
+        if (_isStaleVoiceJoin(gen)) return;
+        voiceState = 'connecting';
+        await Future<void>.delayed(const Duration(milliseconds: 400));
+        if (_isStaleVoiceJoin(gen)) return;
+        await _establishVoice(channelId, haveMic: haveMic, generation: gen);
+      } else {
+        await _failVoice(e, generation: gen);
+      }
+    }
+  }
+
+  Future<void> _establishVoice(
+    int channelId, {
+    required bool haveMic,
+    int generation = 0,
+  }) async {
+    if (_isStaleVoiceJoin(generation)) return;
     final raw = await trpc!.mutate('voice.join', {
       'channelId': channelId,
       'state': {'micMuted': micMuted, 'soundMuted': soundMuted},
     });
+    if (_isStaleVoiceJoin(generation)) return;
     final caps = routerRtpCapabilitiesOf(raw);
     if (caps == null) {
       throw StateError('voice.join did not return router RTP capabilities');
@@ -2305,10 +2488,21 @@ class SessionController extends ChangeNotifier {
     connectedVoiceChannelId = channelId;
     unawaited(_pushPresence());
     rtpCapabilities = await PlatformBridge.loadDevice(caps);
-    try {
-      await PlatformBridge.setOutputDevice(speakerOutputId);
-    } catch (e) {
-      _log('setOutputDevice: $e');
+    if (_isStaleVoiceJoin(generation)) return;
+    if (overlayClient) {
+      unawaited(() async {
+        try {
+          await PlatformBridge.setOutputDevice(speakerOutputId);
+        } catch (e) {
+          _log('setOutputDevice: $e');
+        }
+      }());
+    } else {
+      try {
+        await PlatformBridge.setOutputDevice(speakerOutputId);
+      } catch (e) {
+        _log('setOutputDevice: $e');
+      }
     }
     PlatformBridge.setCameraDevice(store.cameraDevice);
     if (store.ptt) micMuted = true;
@@ -2318,10 +2512,14 @@ class SessionController extends ChangeNotifier {
     }
     final ice = AppConfig.iceServers();
     final send = asJsonMap(await trpc!.mutate('voice.createProducerTransport'));
+    if (_isStaleVoiceJoin(generation)) return;
     sendTransportId = await PlatformBridge.createSendTransport(send, ice);
     final recv = asJsonMap(await trpc!.mutate('voice.createConsumerTransport'));
+    if (_isStaleVoiceJoin(generation)) return;
     _recvConnected = Completer<void>();
     await PlatformBridge.createRecvTransport(recv, ice);
+    _canConsumeRemote = canConsumeRemoteProducers(recvTransportCreated: true);
+    unawaited(_flushPendingConsumes());
     var micFailed = !haveMic;
     if (haveMic) {
       try {
@@ -2335,14 +2533,25 @@ class SessionController extends ChangeNotifier {
     } else {
       micMuted = true;
     }
-    await _waitForRecvConnected();
-    if (connectedVoiceChannelId != channelId) return;
+    if (_isStaleVoiceJoin(generation)) return;
+    if (connectedVoiceChannelId != channelId) {
+      if (overlayClient &&
+          !_isStaleVoiceJoin(generation) &&
+          voiceState == 'connecting') {
+        await _failVoice(
+          StateError('Voice join was cancelled'),
+          generation: generation,
+        );
+      }
+      return;
+    }
     try {
       final producers = asJsonMap(await trpc!.query('voice.getProducers'));
       await _consumeRemoteIds(producers);
     } catch (e) {
       _log('getProducers: $e');
     }
+    if (_isStaleVoiceJoin(generation)) return;
     _scheduleProducerResync();
     PlatformBridge.resumePlayback();
     voiceState = 'connected';
@@ -2358,7 +2567,8 @@ class SessionController extends ChangeNotifier {
     syncKeepScreenAwake();
   }
 
-  Future<void> _failVoice(Object e) async {
+  Future<void> _failVoice(Object e, {int generation = 0}) async {
+    if (_isStaleVoiceJoin(generation)) return;
     voiceError = isPermissionError(e)
         ? missingPermissionKey
         : _voiceErrorText(e);
@@ -2417,16 +2627,44 @@ class SessionController extends ChangeNotifier {
     if (remoteId == ownUserId) return;
     if (trpc == null) return;
     final mapKey = '$remoteId:$kind';
+    final prev = _consumeInflight[mapKey];
+    final gate = Completer<void>();
+    _consumeInflight[mapKey] = gate.future;
+    try {
+      if (prev != null) {
+        try {
+          await prev;
+        } catch (_) {}
+      }
+      if (trpc == null || connectedVoiceChannelId == null) return;
+      await _consumeProducerLocked(
+        kind: kind,
+        remoteId: remoteId,
+        mapKey: mapKey,
+        replace: replace,
+      );
+    } finally {
+      if (identical(_consumeInflight[mapKey], gate.future)) {
+        _consumeInflight.remove(mapKey);
+      }
+      if (!gate.isCompleted) gate.complete();
+    }
+  }
+
+  Future<void> _consumeProducerLocked({
+    required String kind,
+    required int remoteId,
+    required String mapKey,
+    required bool replace,
+  }) async {
     final existing = consumerKeys[mapKey];
-    if (existing != null &&
-        !replace &&
-        PlatformBridge.consumerTrackLive(existing)) {
+    final usable =
+        existing != null && PlatformBridge.consumerTrackLive(existing);
+    if (shouldSkipConsumerReplace(replace: replace, existingUsable: usable)) {
       return;
     }
     if (existing != null) {
-      consumerKeys.remove(mapKey);
-      volumes.remove(mapKey);
-      PlatformBridge.closeConsumer(existing);
+      _dropConsumer(mapKey);
     }
     Object? lastError;
     for (var attempt = 0; attempt < 3; attempt++) {
@@ -2471,6 +2709,12 @@ class SessionController extends ChangeNotifier {
     if (soundMuted || streamMuted || localVol <= 0) {
       PlatformBridge.setVolume(key, 0);
     }
+    _audioConsumerCreatedAt[mapKey] = DateTime.now();
+    _audioMissingSince.remove(mapKey);
+    _audioStallSince.remove(mapKey);
+    _audioDidLightRepair.remove(mapKey);
+    _audioDidInaudibleLight.remove(mapKey);
+    _audioPacketCounts.remove(mapKey);
     PlatformBridge.resumePlayback();
     notifyListeners();
   }
@@ -2518,10 +2762,7 @@ class SessionController extends ChangeNotifier {
         ? const [StreamKind.externalVideo, StreamKind.externalAudio]
         : const [StreamKind.screen, StreamKind.screenAudio];
     for (final kind in kinds) {
-      final mapKey = '$remoteId:$kind';
-      final stored = consumerKeys.remove(mapKey);
-      volumes.remove(mapKey);
-      if (stored != null) PlatformBridge.closeConsumer(stored);
+      _dropConsumer('$remoteId:$kind');
     }
     notifyListeners();
   }
@@ -2668,6 +2909,7 @@ class SessionController extends ChangeNotifier {
   }
 
   Future<void> leaveVoice() async {
+    if (overlayClient) _voiceJoinGeneration++;
     _autoRejoinAt.clear();
     final wasConnected = connectedVoiceChannelId != null;
     try {
@@ -2693,6 +2935,15 @@ class SessionController extends ChangeNotifier {
     volumes.clear();
     speaking.clear();
     watchingStreams.clear();
+    _pendingConsumes.clear();
+    _canConsumeRemote = false;
+    _audioPacketCounts.clear();
+    _audioStallSince.clear();
+    _audioDidLightRepair.clear();
+    _audioDidInaudibleLight.clear();
+    _audioLastReplaceAt.clear();
+    _audioConsumerCreatedAt.clear();
+    _audioMissingSince.clear();
     _cancelProducerResyncs();
     _completeRecvConnected();
     _recvConnected = null;
@@ -2855,7 +3106,7 @@ class SessionController extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> toggleScreen({bool withAudio = false}) async {
+  Future<void> toggleScreen({bool withAudio = true}) async {
     if (connectedVoiceChannelId == null) return;
     if (PlatformBridge.isIos) {
       notifyError('Screen share is not available on iOS Safari.');
@@ -2873,11 +3124,7 @@ class SessionController extends ChangeNotifier {
         StreamKind.screen,
         simulcast: simulcastEnabled,
       );
-      if (withAudio) {
-        try {
-          await PlatformBridge.produce(StreamKind.screenAudio);
-        } catch (_) {}
-      }
+      if (withAudio) await _produceScreenAudio();
       sharing = true;
       PlatformBridge.playSound(KurierSoundType.ownUserStartedScreenshare);
       await androidSyncPip(webcam: webcam, sharing: sharing);
@@ -2886,9 +3133,23 @@ class SessionController extends ChangeNotifier {
     }
   }
 
+  Future<void> _produceScreenAudio() async {
+    if (PlatformBridge.producerLive(StreamKind.screenAudio)) return;
+    try {
+      await PlatformBridge.produce(StreamKind.screenAudio);
+    } catch (e) {
+      _log('produce screen_audio: $e');
+    }
+  }
+
   Future<void> _stopScreenShare() async {
-    PlatformBridge.closeProducer(StreamKind.screen);
     PlatformBridge.closeProducer(StreamKind.screenAudio);
+    PlatformBridge.closeProducer(StreamKind.screen);
+    try {
+      await trpc?.mutate('voice.closeProducer', {
+        'kind': StreamKind.screenAudio,
+      });
+    } catch (_) {}
     try {
       await trpc?.mutate('voice.closeProducer', {'kind': StreamKind.screen});
     } catch (_) {}
@@ -2900,9 +3161,10 @@ class SessionController extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> changeShareSource({bool withAudio = false}) async {
+  Future<void> changeShareSource({bool withAudio = true}) async {
     if (connectedVoiceChannelId == null || !sharing) return;
     await PlatformBridge.getDisplayMedia(withAudio: withAudio);
+    if (withAudio) await _produceScreenAudio();
     notifyListeners();
   }
 
@@ -2928,6 +3190,8 @@ class SessionController extends ChangeNotifier {
     }
     if (name == 'recvState' && payload == 'connected') {
       _completeRecvConnected();
+      _canConsumeRemote = true;
+      unawaited(_flushPendingConsumes());
       PlatformBridge.resumePlayback();
       unawaited(_resyncRemoteProducers());
     }
@@ -2973,13 +3237,22 @@ class SessionController extends ChangeNotifier {
     }
   }
 
-  Future<void> _waitForRecvConnected() async {
-    final c = _recvConnected;
-    if (c == null || c.isCompleted) return;
-    try {
-      await c.future.timeout(const Duration(seconds: 5));
-    } catch (e) {
-      _log('recv wait: $e');
+  Future<void> _flushPendingConsumes() async {
+    if (!_canConsumeRemote || _pendingConsumes.isEmpty) return;
+    final pending = Map<String, ({String kind, int remoteId})>.of(
+      _pendingConsumes,
+    );
+    _pendingConsumes.clear();
+    for (final item in pending.values) {
+      try {
+        await consumeProducer(
+          kind: item.kind,
+          remoteId: item.remoteId,
+          replace: true,
+        );
+      } catch (e) {
+        _log('pending consume ${item.kind} ${item.remoteId}: $e');
+      }
     }
   }
 
@@ -3014,6 +3287,158 @@ class SessionController extends ChangeNotifier {
       t.cancel();
     }
     _producerResyncs.clear();
+  }
+
+  void _clearAudioRepair(String mapKey) {
+    _audioPacketCounts.remove(mapKey);
+    _audioStallSince.remove(mapKey);
+    _audioDidLightRepair.remove(mapKey);
+    _audioDidInaudibleLight.remove(mapKey);
+    _audioLastReplaceAt.remove(mapKey);
+    _audioConsumerCreatedAt.remove(mapKey);
+    _audioMissingSince.remove(mapKey);
+  }
+
+  void _dropConsumer(String mapKey) {
+    final stored = consumerKeys.remove(mapKey);
+    volumes.remove(mapKey);
+    if (stored != null) PlatformBridge.closeConsumer(stored);
+    _clearAudioRepair(mapKey);
+  }
+
+  void _closeConsumersForRemote(int remoteId) {
+    final prefix = '$remoteId:';
+    final keys = [
+      ...consumerKeys.keys.where((key) => key.startsWith(prefix)),
+      ..._pendingConsumes.keys.where((key) => key.startsWith(prefix)),
+    ];
+    for (final key in keys.toSet()) {
+      _pendingConsumes.remove(key);
+      _dropConsumer(key);
+    }
+  }
+
+  Future<bool> _repairStalledRemoteAudio(VoicePlaybackHealth health) async {
+    if (soundMuted || voiceState != 'connected') return false;
+    final cid = connectedVoiceChannelId;
+    if (cid == null) return false;
+    final occupants = voiceMap[cid];
+    if (occupants == null) return false;
+    final expected = expectedRemoteAudioKeys(
+      channelId: cid,
+      ownUserId: ownUserId,
+      voiceMap: voiceMap,
+      consumerKeys: consumerKeys,
+    );
+    if (isVoicePlaybackGestureLocked(
+      health: health,
+      expectedAudioKeys: expected,
+    )) {
+      return false;
+    }
+    final now = DateTime.now();
+    final hasTelemetry = health.audioPackets.isNotEmpty;
+    var repaired = false;
+    for (final e in occupants.entries) {
+      if (e.key == ownUserId) continue;
+      final mapKey = '${e.key}:${StreamKind.audio}';
+      final hasConsumer = consumerKeys.containsKey(mapKey);
+      if (hasConsumer) {
+        _audioMissingSince.remove(mapKey);
+      } else {
+        _audioMissingSince.putIfAbsent(mapKey, () => now);
+      }
+      final bridgeKey = consumerKeys[mapKey] ?? mapKey;
+      final packets =
+          health.audioPackets[bridgeKey] ?? health.audioPackets[mapKey];
+      final prev = _audioPacketCounts[mapKey];
+      final packetsIncreased =
+          packets != null && (prev == null || packets > prev);
+      if (packets != null) _audioPacketCounts[mapKey] = packets;
+      final createdAt = _audioConsumerCreatedAt[mapKey];
+      final inGrace =
+          createdAt != null && now.difference(createdAt) < kVoicePlaybackGrace;
+      if (packetsIncreased || inGrace) {
+        _audioStallSince.remove(mapKey);
+        _audioDidLightRepair.remove(mapKey);
+      } else if (hasConsumer && hasTelemetry) {
+        _audioStallSince.putIfAbsent(mapKey, () => now);
+      }
+      final trackMuted = healthHasKey(health.mutedAudioKeys, bridgeKey, mapKey);
+      final htmlPlaying = healthHasKey(health.playingKeys, bridgeKey, mapKey);
+      final hasGraph = healthHasKey(health.graphKeys, bridgeKey, mapKey);
+      if (remoteAudioIsAudible(
+        htmlPlaying: htmlPlaying,
+        hasGraph: hasGraph,
+        trackMuted: trackMuted,
+      )) {
+        _audioDidInaudibleLight.remove(mapKey);
+      }
+      final micOpen = !e.value.micMuted && !e.value.serverMuted;
+      final inFlight = _consumeInflight.containsKey(mapKey);
+      final packetAction = voicePacketRepairAction(
+        soundMuted: soundMuted,
+        remoteMicOpen: micOpen,
+        gestureLocked: false,
+        consumeInFlight: inFlight,
+        hasConsumer: hasConsumer,
+        hasPacketTelemetry: hasTelemetry,
+        packetsIncreased: packetsIncreased,
+        now: now,
+        stallSince: _audioStallSince[mapKey],
+        lastReplaceAt: _audioLastReplaceAt[mapKey],
+        consumerCreatedAt: createdAt,
+        missingSince: _audioMissingSince[mapKey],
+        didLightRepair: _audioDidLightRepair.contains(mapKey),
+      );
+      final inaudibleAction = voiceInaudibleRepairAction(
+        soundMuted: soundMuted,
+        remoteMicOpen: micOpen,
+        gestureLocked: false,
+        consumeInFlight: inFlight,
+        hasConsumer: hasConsumer,
+        trackMuted: trackMuted,
+        htmlPlaying: htmlPlaying,
+        hasGraph: hasGraph,
+        now: now,
+        lastReplaceAt: _audioLastReplaceAt[mapKey],
+        consumerCreatedAt: createdAt,
+        didLightRepair: _audioDidInaudibleLight.contains(mapKey),
+      );
+      final action = packetAction.index >= inaudibleAction.index
+          ? packetAction
+          : inaudibleAction;
+      switch (action) {
+        case VoicePacketRepairAction.none:
+          break;
+        case VoicePacketRepairAction.light:
+          if (packetAction == VoicePacketRepairAction.light) {
+            _audioDidLightRepair.add(mapKey);
+          }
+          if (inaudibleAction == VoicePacketRepairAction.light) {
+            _audioDidInaudibleLight.add(mapKey);
+          }
+          PlatformBridge.resumePlayback();
+          repaired = true;
+          break;
+        case VoicePacketRepairAction.replace:
+          _audioLastReplaceAt[mapKey] = now;
+          _audioDidLightRepair.remove(mapKey);
+          _audioDidInaudibleLight.remove(mapKey);
+          _audioStallSince.remove(mapKey);
+          try {
+            await consumeProducer(
+              kind: StreamKind.audio,
+              remoteId: e.key,
+              replace: true,
+            );
+            repaired = true;
+          } catch (err) {
+            _log('repair consume $mapKey: $err');
+          }
+      }
+    }
+    return repaired;
   }
 
   Future<void> _checkVoicePlaybackHealth() async {
@@ -3060,13 +3485,17 @@ class SessionController extends ChangeNotifier {
           voiceAudioLocked = false;
           notifyListeners();
         }
+        await _repairStalledRemoteAudio(health);
         return;
       }
       final connectedAt = _voiceConnectedAt;
       final pastGrace =
           connectedAt != null &&
           now.difference(connectedAt) >= kVoicePlaybackGrace;
-      if (!pastGrace) return;
+      if (!pastGrace) {
+        await _repairStalledRemoteAudio(health);
+        return;
+      }
       if (isVoicePlaybackGestureLocked(
         health: health,
         expectedAudioKeys: expected,
@@ -3081,12 +3510,17 @@ class SessionController extends ChangeNotifier {
         voiceAudioLocked = false;
         notifyListeners();
       }
+      final repaired = await _repairStalledRemoteAudio(health);
       _playbackDeadSince ??= now;
       if (!_didLightPlaybackRecovery) {
         _didLightPlaybackRecovery = true;
         PlatformBridge.resumePlayback();
         await _resyncRemoteProducers();
         await _restartIceBoth();
+        return;
+      }
+      final recvDead = isVoiceRecvTransportDead(health.recvState);
+      if (!recvDead && (repaired || health.audioPackets.isNotEmpty)) {
         return;
       }
       final heldDead =

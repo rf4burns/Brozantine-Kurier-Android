@@ -183,6 +183,11 @@ const kVoicePlaybackGrace = Duration(seconds: 4);
 const kVoicePlaybackDeadHold = Duration(seconds: 3);
 const kVoiceAutoRejoinWindow = Duration(seconds: 60);
 const kMaxVoiceAutoRejoins = 2;
+const kVoicePacketStall = Duration(seconds: 4);
+const kVoicePacketStallHold = Duration(seconds: 3);
+const kVoicePacketRepairCooldown = Duration(seconds: 15);
+
+enum VoicePacketRepairAction { none, light, replace }
 
 class VoicePlaybackHealth {
   const VoicePlaybackHealth({
@@ -193,6 +198,8 @@ class VoicePlaybackHealth {
     this.liveAudioKeys = const [],
     this.graphKeys = const [],
     this.playingKeys = const [],
+    this.mutedAudioKeys = const [],
+    this.audioPackets = const {},
   });
 
   final bool ctxRunning;
@@ -202,6 +209,8 @@ class VoicePlaybackHealth {
   final List<String> liveAudioKeys;
   final List<String> graphKeys;
   final List<String> playingKeys;
+  final List<String> mutedAudioKeys;
+  final Map<String, int> audioPackets;
 
   static const dead = VoicePlaybackHealth();
 
@@ -209,6 +218,21 @@ class VoicePlaybackHealth {
     List<String> keys(dynamic raw) {
       if (raw is! List) return const [];
       return raw.map((e) => '$e').where((s) => s.isNotEmpty).toList();
+    }
+
+    Map<String, int> packets(dynamic raw) {
+      if (raw is! Map) return const {};
+      final out = <String, int>{};
+      raw.forEach((key, value) {
+        final name = '$key';
+        if (name.isEmpty) return;
+        if (value is num) {
+          out[name] = value.round();
+        } else {
+          out[name] = int.tryParse('$value') ?? 0;
+        }
+      });
+      return out;
     }
 
     return VoicePlaybackHealth(
@@ -219,6 +243,8 @@ class VoicePlaybackHealth {
       liveAudioKeys: keys(json['liveAudioKeys']),
       graphKeys: keys(json['graphKeys']),
       playingKeys: keys(json['playingKeys']),
+      mutedAudioKeys: keys(json['mutedAudioKeys']),
+      audioPackets: packets(json['audioPackets']),
     );
   }
 }
@@ -275,11 +301,17 @@ bool isVoicePlaybackHealthy({
   final live = health.liveAudioKeys.toSet();
   final graphs = health.graphKeys.toSet();
   final playing = health.playingKeys.toSet();
+  final muted = health.mutedAudioKeys.toSet();
   var needsGraphCtx = false;
   for (final key in expectedAudioKeys) {
     if (!live.contains(key)) return false;
     final hasGraph = graphs.contains(key);
     final hasPlaying = playing.contains(key);
+    final trackMuted = muted.contains(key);
+    if (trackMuted) {
+      if (!hasPlaying) return false;
+      continue;
+    }
     if (!hasGraph && !hasPlaying) return false;
     if (hasGraph && !hasPlaying) needsGraphCtx = true;
   }
@@ -299,13 +331,126 @@ bool isVoicePlaybackGestureLocked({
     return false;
   }
   final live = health.liveAudioKeys.toSet();
+  final playing = health.playingKeys.toSet();
   for (final key in expectedAudioKeys) {
     if (!live.contains(key)) return false;
+    if (playing.contains(key)) return false;
   }
-  return !isVoicePlaybackHealthy(
-    health: health,
-    expectedAudioKeys: expectedAudioKeys,
-  );
+  return !health.ctxRunning || !health.keepAlive;
+}
+
+bool shouldSkipConsumerReplace({
+  required bool replace,
+  required bool existingUsable,
+}) => !replace && existingUsable;
+
+bool canConsumeRemoteProducers({required bool recvTransportCreated}) =>
+    recvTransportCreated;
+
+bool isVoiceRecvTransportDead(String recvState) =>
+    recvState == 'failed' || recvState == 'disconnected';
+
+bool healthHasKey(Iterable<String> keys, String bridgeKey, String mapKey) =>
+    keys.contains(bridgeKey) || keys.contains(mapKey);
+
+bool remoteAudioIsAudible({
+  required bool htmlPlaying,
+  required bool hasGraph,
+  required bool trackMuted,
+}) => htmlPlaying || (hasGraph && !trackMuted);
+
+bool shouldConsumeOnRemoteUnmute({
+  required bool wasMicOpen,
+  required bool isMicOpen,
+  required bool isOwnUser,
+  required bool inCurrentChannel,
+  required bool hasLiveConsumer,
+}) {
+  if (isOwnUser || !inCurrentChannel || wasMicOpen || !isMicOpen) {
+    return false;
+  }
+  return !hasLiveConsumer;
+}
+
+VoicePacketRepairAction voicePacketRepairAction({
+  required bool soundMuted,
+  required bool remoteMicOpen,
+  required bool gestureLocked,
+  required bool consumeInFlight,
+  required bool hasConsumer,
+  required bool hasPacketTelemetry,
+  required bool packetsIncreased,
+  required DateTime now,
+  DateTime? stallSince,
+  DateTime? lastReplaceAt,
+  DateTime? consumerCreatedAt,
+  DateTime? missingSince,
+  bool didLightRepair = false,
+}) {
+  if (soundMuted || !remoteMicOpen || gestureLocked || consumeInFlight) {
+    return VoicePacketRepairAction.none;
+  }
+  if (lastReplaceAt != null &&
+      now.difference(lastReplaceAt) < kVoicePacketRepairCooldown) {
+    return VoicePacketRepairAction.none;
+  }
+  final startedAt = hasConsumer ? consumerCreatedAt : missingSince;
+  if (startedAt != null && now.difference(startedAt) < kVoicePlaybackGrace) {
+    return VoicePacketRepairAction.none;
+  }
+  if (!hasConsumer) return VoicePacketRepairAction.replace;
+  if (!hasPacketTelemetry || packetsIncreased) {
+    return VoicePacketRepairAction.none;
+  }
+  if (stallSince == null) return VoicePacketRepairAction.none;
+  if (now.difference(stallSince) < kVoicePacketStall) {
+    return VoicePacketRepairAction.none;
+  }
+  if (!didLightRepair) return VoicePacketRepairAction.light;
+  if (now.difference(stallSince) < kVoicePacketStall + kVoicePacketStallHold) {
+    return VoicePacketRepairAction.none;
+  }
+  return VoicePacketRepairAction.replace;
+}
+
+VoicePacketRepairAction voiceInaudibleRepairAction({
+  required bool soundMuted,
+  required bool remoteMicOpen,
+  required bool gestureLocked,
+  required bool consumeInFlight,
+  required bool hasConsumer,
+  required bool trackMuted,
+  required bool htmlPlaying,
+  required bool hasGraph,
+  required DateTime now,
+  DateTime? lastReplaceAt,
+  DateTime? consumerCreatedAt,
+  bool didLightRepair = false,
+}) {
+  if (soundMuted ||
+      !remoteMicOpen ||
+      gestureLocked ||
+      consumeInFlight ||
+      !hasConsumer) {
+    return VoicePacketRepairAction.none;
+  }
+  if (lastReplaceAt != null &&
+      now.difference(lastReplaceAt) < kVoicePacketRepairCooldown) {
+    return VoicePacketRepairAction.none;
+  }
+  if (consumerCreatedAt != null &&
+      now.difference(consumerCreatedAt) < kVoicePlaybackGrace) {
+    return VoicePacketRepairAction.none;
+  }
+  if (remoteAudioIsAudible(
+    htmlPlaying: htmlPlaying,
+    hasGraph: hasGraph,
+    trackMuted: trackMuted,
+  )) {
+    return VoicePacketRepairAction.none;
+  }
+  if (!didLightRepair) return VoicePacketRepairAction.light;
+  return VoicePacketRepairAction.replace;
 }
 
 int rejoinsInVoiceWindow(List<DateTime> times, DateTime now) {

@@ -280,6 +280,56 @@ void main() {
     expect(find.text('Message @Gordon'), findsOneWidget);
   });
 
+  testWidgets(
+    'overlay VOICE DM without isDm opens chat instead of the voice stage',
+    (tester) async {
+      tester.view.physicalSize = const Size(390, 844);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      final s = _readySession(selectedChannelId: 30);
+      s.overlayClient = true;
+      s.channels[30] = KurierChannel(
+        id: 30,
+        type: 'VOICE',
+        name: 'DM - 2:30',
+        position: 0,
+        private: true,
+      );
+      s.dms.add(
+        DmConversation(
+          channelId: 30,
+          userId: 2,
+          unreadCount: 0,
+          lastMessageAt: 0,
+        ),
+      );
+      s.messages[30] = [
+        KurierMessage(
+          id: 9,
+          channelId: 30,
+          createdAt: 0,
+          content: '<p>secret hello</p>',
+          userId: 2,
+        ),
+      ];
+      s.showingDms = true;
+      s.stampOverlayDms();
+
+      await tester.pumpWidget(_app(s));
+      await tester.pump();
+
+      expect(find.text('Join Voice'), findsNothing);
+      expect(find.byType(VoiceStage), findsNothing);
+      expect(find.byIcon(Icons.forum), findsOneWidget);
+      expect(find.text('Gordon'), findsWidgets);
+      expect(find.text('secret hello'), findsOneWidget);
+      expect(find.byType(TextField), findsOneWidget);
+      expect(find.text('Message @Gordon'), findsOneWidget);
+    },
+  );
+
   testWidgets('desktop chat shows message and member list', (tester) async {
     tester.view.physicalSize = const Size(1280, 800);
     tester.view.devicePixelRatio = 1;

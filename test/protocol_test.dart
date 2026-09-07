@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
 
@@ -1221,6 +1222,333 @@ void main() {
       expect(keys, ['2:audio']);
     });
 
+    test('keeps a live muted consumer instead of replacing it', () {
+      expect(
+        shouldSkipConsumerReplace(replace: false, existingUsable: true),
+        isTrue,
+      );
+      expect(
+        shouldSkipConsumerReplace(replace: true, existingUsable: true),
+        isFalse,
+      );
+      expect(
+        shouldSkipConsumerReplace(replace: false, existingUsable: false),
+        isFalse,
+      );
+    });
+
+    test('parses inbound audio packet counts from playback health', () {
+      final health = VoicePlaybackHealth.fromJson({
+        'ctxRunning': true,
+        'keepAlive': true,
+        'recvState': 'connected',
+        'liveAudioKeys': ['2:audio'],
+        'audioPackets': {'2:audio': 40, '3:audio': '7'},
+      });
+      expect(health.audioPackets, {'2:audio': 40, '3:audio': 7});
+    });
+
+    test(
+      'packet stall repair ignores quiet rooms that are still receiving',
+      () {
+        final now = DateTime(2026, 9, 6, 19);
+        expect(
+          voicePacketRepairAction(
+            soundMuted: false,
+            remoteMicOpen: true,
+            gestureLocked: false,
+            consumeInFlight: false,
+            hasConsumer: true,
+            hasPacketTelemetry: true,
+            packetsIncreased: true,
+            now: now,
+            consumerCreatedAt: now.subtract(const Duration(seconds: 20)),
+            stallSince: now.subtract(const Duration(seconds: 20)),
+            didLightRepair: true,
+          ),
+          VoicePacketRepairAction.none,
+        );
+      },
+    );
+
+    test('packet stall repair lights then replaces an unmuted stalled mic', () {
+      final now = DateTime(2026, 9, 6, 19);
+      final created = now.subtract(const Duration(seconds: 20));
+      expect(
+        voicePacketRepairAction(
+          soundMuted: false,
+          remoteMicOpen: true,
+          gestureLocked: false,
+          consumeInFlight: false,
+          hasConsumer: true,
+          hasPacketTelemetry: true,
+          packetsIncreased: false,
+          now: now,
+          stallSince: now.subtract(const Duration(seconds: 4)),
+          consumerCreatedAt: created,
+        ),
+        VoicePacketRepairAction.light,
+      );
+      expect(
+        voicePacketRepairAction(
+          soundMuted: false,
+          remoteMicOpen: true,
+          gestureLocked: false,
+          consumeInFlight: false,
+          hasConsumer: true,
+          hasPacketTelemetry: true,
+          packetsIncreased: false,
+          now: now,
+          stallSince: now.subtract(const Duration(seconds: 7)),
+          consumerCreatedAt: created,
+          didLightRepair: true,
+        ),
+        VoicePacketRepairAction.replace,
+      );
+    });
+
+    test(
+      'packet stall repair does not rejoin and skips muted or cooling users',
+      () {
+        final now = DateTime(2026, 9, 6, 19);
+        final created = now.subtract(const Duration(seconds: 20));
+        final stalled = now.subtract(const Duration(seconds: 20));
+        VoicePacketRepairAction act({
+          bool soundMuted = false,
+          bool remoteMicOpen = true,
+          bool gestureLocked = false,
+          bool consumeInFlight = false,
+          DateTime? lastReplaceAt,
+        }) => voicePacketRepairAction(
+          soundMuted: soundMuted,
+          remoteMicOpen: remoteMicOpen,
+          gestureLocked: gestureLocked,
+          consumeInFlight: consumeInFlight,
+          hasConsumer: true,
+          hasPacketTelemetry: true,
+          packetsIncreased: false,
+          now: now,
+          stallSince: stalled,
+          lastReplaceAt: lastReplaceAt,
+          consumerCreatedAt: created,
+          didLightRepair: true,
+        );
+        expect(act(soundMuted: true), VoicePacketRepairAction.none);
+        expect(act(remoteMicOpen: false), VoicePacketRepairAction.none);
+        expect(act(gestureLocked: true), VoicePacketRepairAction.none);
+        expect(act(consumeInFlight: true), VoicePacketRepairAction.none);
+        expect(
+          act(lastReplaceAt: now.subtract(const Duration(seconds: 5))),
+          VoicePacketRepairAction.none,
+        );
+        expect(
+          voicePacketRepairAction(
+            soundMuted: false,
+            remoteMicOpen: true,
+            gestureLocked: false,
+            consumeInFlight: false,
+            hasConsumer: true,
+            hasPacketTelemetry: false,
+            packetsIncreased: false,
+            now: now,
+            stallSince: stalled,
+            consumerCreatedAt: created,
+            didLightRepair: true,
+          ),
+          VoicePacketRepairAction.none,
+        );
+        expect(isVoiceRecvTransportDead('connected'), isFalse);
+        expect(isVoiceRecvTransportDead('failed'), isTrue);
+        expect(
+          shouldSilentRejoinVoice(
+            shouldReceive: true,
+            playbackHealthy: true,
+            pastGrace: true,
+            heldDead: true,
+            rejoinsInWindow: 0,
+          ),
+          isFalse,
+        );
+      },
+    );
+
+    test('missing unmuted consumer is re-consumed after grace', () {
+      final now = DateTime(2026, 9, 6, 19);
+      expect(
+        voicePacketRepairAction(
+          soundMuted: false,
+          remoteMicOpen: true,
+          gestureLocked: false,
+          consumeInFlight: false,
+          hasConsumer: false,
+          hasPacketTelemetry: true,
+          packetsIncreased: false,
+          now: now,
+          missingSince: now.subtract(const Duration(seconds: 1)),
+        ),
+        VoicePacketRepairAction.none,
+      );
+      expect(
+        voicePacketRepairAction(
+          soundMuted: false,
+          remoteMicOpen: true,
+          gestureLocked: false,
+          consumeInFlight: false,
+          hasConsumer: false,
+          hasPacketTelemetry: true,
+          packetsIncreased: false,
+          now: now,
+          missingSince: now.subtract(const Duration(seconds: 5)),
+        ),
+        VoicePacketRepairAction.replace,
+      );
+    });
+
+    test('parses muted audio keys from playback health', () {
+      final health = VoicePlaybackHealth.fromJson({
+        'ctxRunning': true,
+        'keepAlive': true,
+        'recvState': 'connected',
+        'liveAudioKeys': ['2:audio'],
+        'graphKeys': ['2:audio'],
+        'mutedAudioKeys': ['2:audio'],
+      });
+      expect(health.mutedAudioKeys, ['2:audio']);
+    });
+
+    test('playback health rejects a muted graph that is not playing', () {
+      const health = VoicePlaybackHealth(
+        ctxRunning: true,
+        keepAlive: true,
+        recvState: 'connected',
+        liveAudioKeys: ['2:audio'],
+        graphKeys: ['2:audio'],
+        mutedAudioKeys: ['2:audio'],
+      );
+      expect(
+        isVoicePlaybackHealthy(health: health, expectedAudioKeys: ['2:audio']),
+        isFalse,
+      );
+      expect(
+        isVoicePlaybackGestureLocked(
+          health: health,
+          expectedAudioKeys: ['2:audio'],
+        ),
+        isFalse,
+      );
+    });
+
+    test('playback health accepts unmuted HTML or unmuted graph', () {
+      expect(
+        isVoicePlaybackHealthy(
+          health: const VoicePlaybackHealth(
+            recvState: 'connected',
+            liveAudioKeys: ['2:audio'],
+            playingKeys: ['2:audio'],
+            mutedAudioKeys: ['2:audio'],
+          ),
+          expectedAudioKeys: ['2:audio'],
+        ),
+        isTrue,
+      );
+      expect(
+        isVoicePlaybackHealthy(
+          health: const VoicePlaybackHealth(
+            ctxRunning: true,
+            keepAlive: true,
+            recvState: 'connected',
+            liveAudioKeys: ['2:audio'],
+            graphKeys: ['2:audio'],
+          ),
+          expectedAudioKeys: ['2:audio'],
+        ),
+        isTrue,
+      );
+    });
+
+    test('recv transport ICE connected is not required to consume', () {
+      expect(canConsumeRemoteProducers(recvTransportCreated: true), isTrue);
+      expect(canConsumeRemoteProducers(recvTransportCreated: false), isFalse);
+    });
+
+    test('inaudible muted graph lights then replaces after grace', () {
+      final now = DateTime(2026, 9, 6, 20);
+      final created = now.subtract(const Duration(seconds: 20));
+      VoicePacketRepairAction act({
+        bool htmlPlaying = false,
+        bool hasGraph = true,
+        bool trackMuted = true,
+        bool didLightRepair = false,
+        DateTime? consumerCreatedAt,
+      }) => voiceInaudibleRepairAction(
+        soundMuted: false,
+        remoteMicOpen: true,
+        gestureLocked: false,
+        consumeInFlight: false,
+        hasConsumer: true,
+        trackMuted: trackMuted,
+        htmlPlaying: htmlPlaying,
+        hasGraph: hasGraph,
+        now: now,
+        consumerCreatedAt: consumerCreatedAt ?? created,
+        didLightRepair: didLightRepair,
+      );
+      expect(act(), VoicePacketRepairAction.light);
+      expect(act(didLightRepair: true), VoicePacketRepairAction.replace);
+      expect(
+        act(consumerCreatedAt: now.subtract(const Duration(seconds: 1))),
+        VoicePacketRepairAction.none,
+      );
+      expect(act(htmlPlaying: true), VoicePacketRepairAction.none);
+      expect(
+        act(trackMuted: false, hasGraph: true),
+        VoicePacketRepairAction.none,
+      );
+    });
+
+    test('remote unmute with missing consumer should re-consume', () {
+      expect(
+        shouldConsumeOnRemoteUnmute(
+          wasMicOpen: false,
+          isMicOpen: true,
+          isOwnUser: false,
+          inCurrentChannel: true,
+          hasLiveConsumer: false,
+        ),
+        isTrue,
+      );
+      expect(
+        shouldConsumeOnRemoteUnmute(
+          wasMicOpen: false,
+          isMicOpen: true,
+          isOwnUser: false,
+          inCurrentChannel: true,
+          hasLiveConsumer: true,
+        ),
+        isFalse,
+      );
+      expect(
+        shouldConsumeOnRemoteUnmute(
+          wasMicOpen: true,
+          isMicOpen: true,
+          isOwnUser: false,
+          inCurrentChannel: true,
+          hasLiveConsumer: false,
+        ),
+        isFalse,
+      );
+      expect(
+        shouldConsumeOnRemoteUnmute(
+          wasMicOpen: false,
+          isMicOpen: true,
+          isOwnUser: true,
+          inCurrentChannel: true,
+          hasLiveConsumer: false,
+        ),
+        isFalse,
+      );
+    });
+
     test('reads simulcast from public server settings', () {
       final s = SessionController();
       expect(s.simulcastEnabled, isFalse);
@@ -1294,6 +1622,33 @@ void main() {
       expect(StreamKind.startsClientMuted(StreamKind.audio), isFalse);
       expect(StreamKind.startsClientMuted(StreamKind.video), isFalse);
       expect(StreamKind.startsClientMuted(StreamKind.screen), isFalse);
+    });
+
+    test('starts screen share with audio by default', () async {
+      final s = SessionController();
+      s.ownUserId = 1;
+      s.users[1] = KurierUser(
+        id: 1,
+        name: 'Ada',
+        roleIds: const [AppConfig.ownerRoleId],
+      );
+      s.channels[20] = KurierChannel(
+        id: 20,
+        type: 'VOICE',
+        name: 'voice',
+        position: 1,
+      );
+      s.connectedVoiceChannelId = 20;
+      s.voiceState = 'connected';
+
+      await s.toggleScreen();
+      expect(s.sharing, isTrue);
+
+      await s.changeShareSource();
+      expect(s.sharing, isTrue);
+
+      await s.toggleScreen();
+      expect(s.sharing, isFalse);
     });
 
     test(
@@ -1470,6 +1825,43 @@ void main() {
       expect(c.isVoice, isTrue);
       expect(c.isDm, isTrue);
       expect(c.opensAsVoiceStage, isFalse);
+    });
+
+    test('overlay JSON aliases and DM names mark isDm', () {
+      expect(
+        KurierChannel.fromJson({
+          'id': 31,
+          'type': 'VOICE',
+          'name': 'secret',
+          'isDM': true,
+        }, overlay: true).isDm,
+        isTrue,
+      );
+      expect(
+        KurierChannel.fromJson({
+          'id': 32,
+          'type': 'VOICE',
+          'name': 'secret',
+          'is_dm': true,
+        }, overlay: true).isDm,
+        isTrue,
+      );
+      expect(
+        KurierChannel.fromJson({
+          'id': 33,
+          'type': 'VOICE',
+          'name': 'DM - 2:30',
+        }, overlay: true).isDm,
+        isTrue,
+      );
+      expect(
+        KurierChannel.fromJson({
+          'id': 34,
+          'type': 'VOICE',
+          'name': 'DM - 2:30',
+        }).isDm,
+        isFalse,
+      );
     });
 
     test('blank topic is not displayed', () {
@@ -2638,6 +3030,75 @@ void main() {
     });
 
     test(
+      'overlay VOICE without isDm listed as a DM does not join voice',
+      () async {
+        final s = voiceSession();
+        s.overlayClient = true;
+        s.channels[30] = KurierChannel(
+          id: 30,
+          type: 'VOICE',
+          name: 'DM - 2:30',
+          position: 0,
+          private: true,
+        );
+        s.dms.add(
+          DmConversation(
+            channelId: 30,
+            userId: 2,
+            unreadCount: 0,
+            lastMessageAt: 0,
+          ),
+        );
+        s.selectedChannelId = 10;
+        await s.selectChannel(30);
+        expect(s.voiceState, 'idle');
+        expect(s.connectedVoiceChannelId, isNull);
+        expect(s.opensAsVoiceStage(s.channels[30]), isFalse);
+        expect(s.channels[30]!.isDm, isTrue);
+      },
+    );
+
+    test(
+      'native VOICE without isDm still joins even if listed as a DM',
+      () async {
+        final s = voiceSession();
+        s.overlayClient = false;
+        s.channels[30] = KurierChannel(
+          id: 30,
+          type: 'VOICE',
+          name: 'DM - 2:30',
+          position: 0,
+          private: true,
+        );
+        s.dms.add(
+          DmConversation(
+            channelId: 30,
+            userId: 2,
+            unreadCount: 0,
+            lastMessageAt: 0,
+          ),
+        );
+        s.selectedChannelId = 30;
+        await s.selectChannel(30);
+        expect(s.voiceState, isNot('idle'));
+      },
+    );
+
+    test('overlay voice join times out of connecting and can retry', () async {
+      final s = voiceSession();
+      s.overlayClient = true;
+      s.overlayGetUserMediaTimeout = const Duration(seconds: 5);
+      s.overlayVoiceJoinTimeout = const Duration(milliseconds: 40);
+      s.overlayGetUserMediaHook = () => Completer<void>().future;
+      await s.joinVoice(20);
+      expect(s.voiceState, 'failed');
+      s.clearError();
+      s.overlayGetUserMediaHook = () async {};
+      await s.joinVoice(20);
+      expect(s.voiceState, isNot('connecting'));
+    });
+
+    test(
       'selecting the current voice channel is a no-op when connected',
       () async {
         final s = voiceSession();
@@ -2666,9 +3127,15 @@ void main() {
       s.connectedVoiceChannelId = 20;
       s.voiceState = 'connected';
       s.voiceMap[20] = {1: VoiceUserState(), 2: VoiceUserState()};
+      s.consumerKeys['2:audio'] = '2:audio';
+      s.consumerKeys['2:video'] = '2:video';
+      s.consumerKeys['1:audio'] = '1:audio';
       s.applyVoiceLeave({'channelId': 20, 'userId': 2});
       expect(s.connectedVoiceChannelId, 20);
       expect(s.voiceState, 'connected');
+      expect(s.consumerKeys.containsKey('2:audio'), isFalse);
+      expect(s.consumerKeys.containsKey('2:video'), isFalse);
+      expect(s.consumerKeys['1:audio'], '1:audio');
     });
 
     test('own voice.onMoved to null clears connected state', () {
