@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:kurier_web/app/l10n.dart';
+import 'package:kurier_web/app/release_notes.dart';
 import 'package:kurier_web/app/theme.dart';
 import 'package:kurier_web/session/session_controller.dart';
 import 'package:kurier_web/ui/settings_user.dart';
@@ -40,9 +41,9 @@ void main() {
 
     await tester.tap(find.text('Changelog'));
     await tester.pumpAndSettle();
-    expect(find.text('1.0.6'), findsWidgets);
+    expect(find.text(releaseNotes.first.version), findsWidgets);
     expect(
-      find.textContaining('YouTube videos play in chat again'),
+      find.textContaining(releaseNotes.first.notes.first),
       findsOneWidget,
     );
     await tester.scrollUntilVisible(
